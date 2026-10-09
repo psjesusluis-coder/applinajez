@@ -1,48 +1,29 @@
-* { 
-  box-sizing: border-box; 
-}
+* { box-sizing: border-box; }
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   color: #1f2937;
   background: #fafaf9;
 }
 
-/* ============================================================================
-   LAYOUT PRINCIPAL
-   ============================================================================ */
-.app {
-  height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
+.app { height: 100vh; display: flex; flex-direction: column; }
 
-/* Barra Superior */
+/* --- Barra Superior --- */
 .topbar {
   height: 60px;
   display: flex;
   align-items: center;
+  gap: 16px;
   padding: 0 24px;
   background: #fff;
   border-bottom: 1px solid #e7e5e4;
-  gap: 16px;
 }
-
-.topbar h1 {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 24px;
-  margin: 0;
-  color: #292524;
-}
-
-.toolbar {
-  margin-left: auto;
-  display: flex;
-  gap: 8px;
-}
+.topbar h1 { font-family: Georgia, serif; font-size: 22px; margin: 0; color: #292524; }
+.toolbar { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
 .toolbar button {
+  font: inherit;
   font-size: 13px;
   padding: 8px 16px;
   border-radius: 6px;
@@ -51,37 +32,15 @@ body {
   cursor: pointer;
   transition: all 0.2s;
 }
+.toolbar button:hover { background: #f5f5f4; }
+.toolbar button.primary { background: #2563eb; color: #fff; border-color: #2563eb; font-weight: 600; }
+.toolbar button.primary:hover { background: #1d4ed8; }
 
-.toolbar button:hover {
-  background: #f5f5f4;
-}
+/* --- Layout Principal --- */
+.body { flex: 1; display: flex; min-height: 0; }
+.canvas { position: relative; flex: 1; background: #fafaf9; }
 
-.toolbar button.primary {
-  background: #2563eb;
-  color: #fff;
-  border-color: #2563eb;
-}
-
-.toolbar button.primary:hover {
-  background: #1d4ed8;
-}
-
-/* Cuerpo Principal */
-.body {
-  flex: 1;
-  display: flex;
-  min-height: 0;
-}
-
-.canvas {
-  flex: 1;
-  position: relative;
-  background: #fafaf9;
-}
-
-/* ============================================================================
-   NODOS DE PERSONA (DIMENSIONES FIJAS 160x160)
-   ============================================================================ */
+/* --- NODOS DE PERSONA (DIMENSIONES EXACTAS 160x160) --- */
 .person-node {
   width: 160px !important;
   height: 160px !important;
@@ -98,66 +57,39 @@ body {
   position: relative;
 }
 
-/* Hombre: Cuadrado */
+/* Hombre: Cuadrado con bordes suaves */
 .person-node.male {
-  border-radius: 4px;
+  border-radius: 8px;
   border-color: #3b82f6;
   background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
 }
 
-/* Mujer: Círculo */
+/* Mujer: Círculo perfecto, MISMAS dimensiones externas */
 .person-node.female {
   border-radius: 50%;
   border-color: #db2777;
   background: linear-gradient(135deg, #fdf2f8 0%, #fce7f3 100%);
 }
 
-/* Seleccionado */
 .person-node.selected {
   box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.3);
   z-index: 10;
 }
 
-/* Fallecido */
-.person-node.deceased {
-  opacity: 0.75;
-}
-
+.person-node.deceased { opacity: 0.75; }
 .person-node.deceased::after {
   content: '';
   position: absolute;
-  top: 50%;
-  left: -10%;
-  right: -10%;
+  top: 50%; left: -10%; right: -10%;
   height: 2px;
   background: #1e293b;
   transform: rotate(-25deg);
   pointer-events: none;
 }
 
-/* Contenido del Nodo */
-.person-content {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  pointer-events: none;
-}
-
-.person-name {
-  font-weight: 700;
-  font-size: 13px;
-  color: #1e293b;
-  line-height: 1.2;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.person-year {
-  font-size: 11px;
-  color: #64748b;
-}
+.person-content { display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none; }
+.person-name { font-weight: 700; font-size: 13px; color: #1e293b; line-height: 1.2; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.person-year { font-size: 11px; color: #64748b; }
 
 /* Handles (Puntos de Conexión) */
 .node-handle {
@@ -168,86 +100,9 @@ body {
   opacity: 0;
   transition: opacity 0.2s;
 }
+.person-node:hover .node-handle, .person-node.selected .node-handle { opacity: 1; }
 
-.person-node:hover .node-handle,
-.person-node.selected .node-handle {
-  opacity: 1;
-}
-
-/* ============================================================================
-   MENÚ CONTEXTUAL (Estilo GenoPro)
-   ============================================================================ */
-.context-menu {
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.05);
-  padding: 8px;
-  min-width: 240px;
-  animation: menuAppear 0.15s ease-out;
-}
-
-@keyframes menuAppear {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.menu-section {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.menu-section:not(:last-child) {
-  border-bottom: 1px solid #f1f5f9;
-  padding-bottom: 8px;
-  margin-bottom: 8px;
-}
-
-.menu-title {
-  font-size: 11px;
-  font-weight: 700;
-  color: #64748b;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 4px 8px;
-  margin-bottom: 2px;
-}
-
-.context-menu button {
-  text-align: left;
-  padding: 8px 12px;
-  border: none;
-  background: transparent;
-  border-radius: 6px;
-  font-size: 13px;
-  color: #334155;
-  cursor: pointer;
-  transition: all 0.15s;
-  width: 100%;
-}
-
-.context-menu button:hover {
-  background: #f1f5f9;
-  color: #0f172a;
-}
-
-.context-menu button.danger {
-  color: #dc2626;
-}
-
-.context-menu button.danger:hover {
-  background: #fef2f2;
-}
-
-/* ============================================================================
-   LEYENDA
-   ============================================================================ */
+/* --- Leyenda --- */
 .legend {
   position: absolute;
   bottom: 20px;
@@ -261,32 +116,11 @@ body {
   z-index: 5;
   min-width: 200px;
 }
+.legend strong { display: block; margin-bottom: 10px; color: #292524; font-size: 13px; }
+.legend-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.swatch { width: 32px; height: 0; display: inline-block; border-top-style: solid; flex-shrink: 0; }
 
-.legend strong {
-  display: block;
-  margin-bottom: 10px;
-  color: #292524;
-  font-size: 13px;
-}
-
-.legend-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 6px 0;
-}
-
-.swatch {
-  width: 32px;
-  height: 0;
-  display: inline-block;
-  border-top-style: solid;
-  flex-shrink: 0;
-}
-
-/* ============================================================================
-   PANEL LATERAL DE EDICIÓN
-   ============================================================================ */
+/* --- PANEL LATERAL DE EDICIÓN (Restaurado) --- */
 .editor {
   width: 320px;
   background: #fff;
@@ -298,45 +132,22 @@ body {
   overflow-y: auto;
   box-shadow: -4px 0 12px rgba(0, 0, 0, 0.05);
 }
+.editor-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid #e7e5e4; }
+.editor-head strong { font-size: 16px; color: #292524; }
 
-.editor-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #e7e5e4;
-}
-
-.editor-head strong {
-  font-size: 16px;
-  color: #292524;
-}
-
-.editor label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #57534e;
-}
-
-.editor input,
-.editor select {
+.editor label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 600; color: #57534e; }
+.editor input, .editor select {
   padding: 10px 12px;
   border: 1px solid #d6d3d1;
   border-radius: 6px;
   font-size: 13px;
   color: #1f2937;
   background: #fff;
-  transition: border-color 0.2s;
 }
+.editor input:focus, .editor select:focus { outline: none; border-color: #2563eb; }
 
-.editor input:focus,
-.editor select:focus {
-  outline: none;
-  border-color: #2563eb;
-}
+.checkbox-label { flex-direction: row !important; align-items: center; gap: 8px; cursor: pointer; }
+.checkbox-label input { width: 16px; height: 16px; cursor: pointer; }
 
 .section-title {
   font-size: 12px;
@@ -349,15 +160,11 @@ body {
   border-top: 1px solid #e7e5e4;
 }
 
-.rel-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
+.rel-list { display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto; }
 .rel-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   padding: 8px 12px;
   background: #f8fafc;
   border-radius: 6px;
@@ -365,51 +172,39 @@ body {
   color: #475569;
   border: 1px solid #e2e8f0;
 }
+.rel-item .ghost.small { padding: 4px; font-size: 14px; }
+.rel-item .ghost.small:hover { background: #fee2e2; color: #dc2626; }
 
-.hint {
-  font-size: 12px;
-  color: #78716c;
-  margin: 0;
-  padding: 12px;
-  background: #f8fafc;
+.hint { font-size: 12px; color: #78716c; margin: 0; padding: 12px; background: #f8fafc; border-radius: 6px; text-align: center; }
+
+.primary.full { width: 100%; margin-top: 4px; font-weight: 600; }
+.primary.full:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.danger {
+  margin-top: auto;
+  padding: 10px;
+  border: 1px solid #fca5a5;
+  background: #fff;
+  color: #b91c1c;
   border-radius: 6px;
-  line-height: 1.5;
-}
-
-.ghost {
-  background: transparent;
-  border: none;
   cursor: pointer;
-  color: #78716c;
-  font-size: 18px;
-  padding: 4px 8px;
+  font-weight: 600;
   transition: all 0.2s;
 }
+.danger:hover { background: #fef2f2; }
 
-.ghost:hover {
-  background: #f5f5f4;
-  color: #292524;
-}
+.ghost { background: transparent; border: none; cursor: pointer; color: #78716c; font-size: 18px; padding: 4px 8px; }
+.ghost:hover { background: #f5f5f4; color: #292524; }
 
-/* ============================================================================
-   RESPONSIVE
-   ============================================================================ */
+/* --- Responsive --- */
 @media (max-width: 768px) {
   .editor {
     position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
+    right: 0; top: 0; bottom: 0;
     width: 100%;
     max-width: 300px;
     box-shadow: -4px 0 20px rgba(0, 0, 0, 0.1);
+    z-index: 20;
   }
-  
-  .legend {
-    display: none;
-  }
-  
-  .context-menu {
-    max-width: calc(100vw - 20px);
-  }
+  .legend { display: none; }
 }
