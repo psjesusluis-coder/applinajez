@@ -170,7 +170,12 @@ function normalize(data) {
 function serialize(g) {
   return {
     nodes: g.nodes.map((n) => ({ id: n.id, position: n.position, data: n.data })),
-    edges: g.edges.map((e) => ({ id: e.id, source: e.source, target: e.target, data: { kind: e.data.kind } })),
+    edges: g.edges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      data: { kind: e.data.kind },
+    })),
   };
 }
 
@@ -266,9 +271,10 @@ function RelationEdge({
 
   let d;
   if (PARENT_KINDS.includes(data?.kind) && data?.bus) {
-    // Bajada desde la pareja, línea horizontal compartida y bajada al hijo
-    const { bx, cy, by } = data.bus;
-    d = `M ${bx} ${cy} L ${bx} ${by} L ${targetX} ${by} L ${targetX} ${targetY}`;
+    // Mismo esquema de los genogramas: bajada desde el punto medio de la pareja,
+    // una línea horizontal compartida por los hermanos y una bajada a cada hijo.
+    const { ax, ay, busY } = data.bus;
+    d = `M ${ax} ${ay} L ${ax} ${busY} L ${targetX} ${busY} L ${targetX} ${targetY}`;
   } else {
     const [path] = def.smooth ? getSmoothStepPath({ ...p, borderRadius: 0 }) : getStraightPath(p);
     d = path;
@@ -507,29 +513,35 @@ export default function App() {
   const act = useCallback((type, id) => setGraph((g) => ACTIONS[type](g, id)), []);
   const ctx = useMemo(() => ({ act }), [act]);
 
-  // Calcula la estructura de pareja: bajada desde el punto medio, horizontal compartida
+  // Calcula el "bus" de cada familia: un solo punto de salida por pareja
+  // y una sola línea horizontal para todos sus hijos.
   const viewEdges = useMemo(() => {
     const pos = (id) => find(graph.nodes, id)?.position;
+
+    const anchors = {};
+    for (const e of graph.edges) {
+      if (!PARENT_KINDS.includes(e.data?.kind)) continue;
+      const ps = parentsOf(graph, e.target).sort();
+      const pts = ps.map(pos).filter(Boolean);
+      const child = pos(e.target);
+      if (!pts.length || !child) continue;
+      const key = ps.join('|');
+      if (!anchors[key]) {
+        const [p0, p1] = pts;
+        anchors[key] = p1
+          ? { ax: (p0.x + p1.x) / 2 + 60, ay: p0.y + 60, minY: child.y }
+          : { ax: p0.x + 60, ay: p0.y + 120, minY: child.y };
+      }
+      anchors[key].minY = Math.min(anchors[key].minY, child.y);
+    }
+
     return graph.edges.map((e) => {
       const def = KINDS[e.data?.kind] ?? KINDS.filiacion;
       let bus;
-
       if (PARENT_KINDS.includes(e.data?.kind)) {
-        const child = pos(e.target);
-        const pts = parentsOf(graph, e.target).map(pos).filter(Boolean);
-        let bx;
-        let cy;
-        if (pts.length >= 2) {
-          bx = (pts[0].x + pts[1].x) / 2 + 60;
-          cy = pts[0].y + 60;
-        } else {
-          const p = pos(e.source);
-          bx = p.x + 60;
-          cy = p.y + 120;
-        }
-        if (child) bus = { bx, cy, by: (cy + child.y) / 2 };
+        const a = anchors[parentsOf(graph, e.target).sort().join('|')];
+        if (a) bus = { ax: a.ax, ay: a.ay, busY: a.ay + (a.minY - a.ay) / 2 };
       }
-
       return {
         ...e,
         type: 'rel',
