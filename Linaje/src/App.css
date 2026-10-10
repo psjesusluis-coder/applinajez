@@ -21,7 +21,7 @@ body {
 }
 .topbar h1 { font-family: Georgia, serif; font-size: 22px; margin: 0; }
 .toolbar { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.toolbar button, .toolbar select, .editor button, .legend button {
+.toolbar button, .editor button, .legend button {
   font: inherit;
   font-size: 13px;
   padding: 6px 12px;
@@ -40,13 +40,12 @@ body {
 .primary { background: #2563eb !important; color: #fff !important; border-color: #2563eb !important; }
 .primary:hover { background: #1d4ed8 !important; }
 .primary:disabled { opacity: 0.5; cursor: default; }
-.kind { font-size: 13px; display: flex; gap: 6px; align-items: center; color: #57534e; }
 
 /* Cuerpo */
 .body { flex: 1; display: flex; min-height: 0; }
 .canvas { position: relative; flex: 1; background: #fafaf9; }
 
-/* Nodos: mismo tamaño para hombre y mujer */
+/* Personas: caja fija de 120 x 120 */
 .person {
   position: relative;
   width: 120px;
@@ -55,48 +54,42 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 8px;
+  padding: 0 6px;
   text-align: center;
-  background: #fff;
   font-size: 12px;
   border: 2px solid;
 }
-.person--m { border-color: #2563eb; background: #dbeafe; border-radius: 4px; }
-.person--f { border-color: #db2777; background: #fce7f3; border-radius: 50%; }
+.person--m { border-color: #2563eb; background: #eff6ff; border-radius: 4px; }
+.person--f { border-color: #db2777; background: #fdf2f8; border-radius: 50%; }
 .person.is-selected { box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35); }
-.person.is-index { box-shadow: 0 0 0 3px #fff, 0 0 0 5px #1f2937; }
-.person.is-index.is-selected { box-shadow: 0 0 0 3px #fff, 0 0 0 5px #1f2937, 0 0 0 8px rgba(37, 99, 235, 0.35); }
+.person.is-index { box-shadow: 0 0 0 3px #ffffff, 0 0 0 4px #1f2937; }
+.person.is-index.is-selected {
+  box-shadow: 0 0 0 3px #ffffff, 0 0 0 4px #1f2937, 0 0 0 7px rgba(37, 99, 235, 0.35);
+}
+.person-name { font-weight: 600; font-size: 12px; word-break: break-word; }
+.person-year { font-size: 10px; color: #6b7280; margin-top: 2px; }
 
-/* Fallecido: diagonal dentro del cuadro */
-.person.is-dead::after {
-  content: '';
+/* Fallecido: diagonal de esquina inferior izquierda a superior derecha */
+.dead-line {
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(
-    to top right,
-    transparent 47%,
-    #1f2937 48%,
-    #1f2937 52%,
-    transparent 53%
-  );
+  left: -2px;
+  top: -2px;
+  width: 120px;
+  height: 120px;
+  pointer-events: none;
+  overflow: visible;
+}
+
+/* Capa de trazos: se mueve y escala con el canvas */
+.drawings {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
   pointer-events: none;
 }
-
-.person-name { font-weight: 600; font-size: 12px; word-break: break-word; position: relative; z-index: 1; }
-.person-year { font-size: 10px; color: #6b7280; margin-top: 2px; position: relative; z-index: 1; }
-
-/* Puntos de conexión: aparecen al pasar el cursor o seleccionar */
-.react-flow__handle {
-  width: 10px;
-  height: 10px;
-  background: #2563eb;
-  border: 2px solid #fff;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-.person:hover .react-flow__handle,
-.person.is-selected .react-flow__handle { opacity: 1; }
 
 /* Botones alrededor de la persona seleccionada */
 .quick {
@@ -131,12 +124,13 @@ body {
   border-radius: 8px;
   border: 1px solid #e7e5e4;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
-  font-size: 12px;
+  font-size: 11px;
 }
-.legend-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-.swatch { width: 36px; height: 0; display: inline-block; flex-shrink: 0; }
+.legend-title { font-weight: 600; margin: 8px 0 4px; color: #57534e; }
+.legend-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+.glyph { flex-shrink: 0; overflow: visible; }
 
-/* Editor lateral */
+/* Panel lateral */
 .editor {
   width: 300px;
   background: #fff;
