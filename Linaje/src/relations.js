@@ -1,44 +1,63 @@
-export const PARENT_KINDS = ['filiacion', 'adopcion'];
-export const PARTNER_KINDS = ['matrimonio', 'union'];
+// Tipos de vínculo y relación, según la especificación de Linaje.
+// color, width, dash: trazo | pattern: forma del trazo | deco: adorno sobre la línea
+// arrow: punta de flecha al final | step/amp: tamaño del zigzag (px)
 
-export const KINDS = {
-  matrimonio: { group: 'vinculo', label: 'Matrimonio', color: '#374151', width: 2 },
-  union: { group: 'vinculo', label: 'Unión libre', color: '#374151', width: 2, dash: '6 4' },
-  divorcio: { group: 'vinculo', label: 'Divorcio / separación', color: '#374151', width: 2, deco: 'slash' },
-  filiacion: { group: 'vinculo', label: 'Filiación (padre/madre → hijo/a)', color: '#6b7280', width: 1.5, smooth: true },
-  adopcion: { group: 'vinculo', label: 'Adopción', color: '#6b7280', width: 1.5, dash: '6 4', smooth: true },
-
-  indiferente: { group: 'emocion', label: 'Indiferente / Apático', color: '#1f2937', width: 1.2, dash: '2 3' },
-  distante: { group: 'emocion', label: 'Distante / Deficiente', color: '#1f2937', width: 1.5, dash: '6 4' },
-  corte: { group: 'emocion', label: 'Corte de relación / Distanciado', color: '#ef4444', width: 2, deco: 'bar' },
-  discordia: { group: 'emocion', label: 'Discordia / Conflicto', color: '#ef4444', width: 2, dash: '6 4', deco: 'slash' },
-  odio: { group: 'emocion', label: 'Odio', color: '#ef4444', width: 2.5, dash: '2 3' },
-  armonia: { group: 'emocion', label: 'Armonía', color: '#10b981', width: 2, deco: 'circle' },
-  amistad: { group: 'emocion', label: 'Amistad / Cercano', color: '#10b981', width: 2, dash: '4 3' },
-  mejores: { group: 'emocion', label: 'Mejores amigos / Muy cercanos', color: '#10b981', width: 5 },
-  amor: { group: 'emocion', label: 'Amor', color: '#10b981', width: 2, deco: 'circle' },
-  enamorado: { group: 'emocion', label: 'Enamorado/a', color: '#10b981', width: 2, deco: 'double' },
-  hostil: { group: 'emocion', label: 'Hostil', color: '#ef4444', width: 2, dash: '1 3' },
-  distante_hostil: { group: 'emocion', label: 'Distante-Hostil', color: '#ef4444', width: 2, dash: '1 2' },
-  cercano_hostil: { group: 'emocion', label: 'Cercano-Hostil', color: '#10b981', width: 2, deco: 'double' },
-  fusionado: { group: 'emocion', label: 'Fusionado', color: '#ef4444', width: 1.5, deco: 'triple' },
-  fusionado_hostil: { group: 'emocion', label: 'Fusionado-Hostil', color: '#1f2937', width: 1.5, deco: 'triple' },
-  desconfianza: { group: 'emocion', label: 'Desconfianza', color: '#ef4444', width: 2, dash: '3 2' },
-  violencia: { group: 'emocion', label: 'Violencia', color: '#1f2937', width: 2, dash: '3 2', arrow: true },
-  violencia_distancia: { group: 'emocion', label: 'Violencia a distancia', color: '#ef4444', width: 2, dash: '3 2' },
-  violencia_cercana: { group: 'emocion', label: 'Violencia cercana', color: '#1f2937', width: 2, dash: '2 2' },
-  enfocado: { group: 'emocion', label: 'Enfocado en', color: '#1f2937', width: 1.5, arrow: true },
-  enfocado_neg: { group: 'emocion', label: 'Enfocado negativamente en', color: '#ef4444', width: 1.5, arrow: true, dash: '3 2' },
-  abuso_sexual: { group: 'emocion', label: 'Abuso sexual', color: '#1f2937', width: 2, dash: '1 3' },
-  abuso_fisico: { group: 'emocion', label: 'Abuso físico', color: '#ef4444', width: 2, dash: '3 3', arrow: true },
-  abuso_emocional: { group: 'emocion', label: 'Abuso emocional', color: '#1f2937', width: 1.5, arrow: true, deco: 'box' },
-  manipulador: { group: 'emocion', label: 'Manipulador/a', color: '#1f2937', width: 2, deco: 'x' },
-  controlador: { group: 'emocion', label: 'Controlador/a', color: '#ef4444', width: 1.5, deco: 'box' },
-  fan: { group: 'emocion', label: 'Fan / Admirador(a)', color: '#1f2937', width: 1.5, arrow: true, deco: 'double' },
+export const PAREJA = {
+  matrimonio: { label: 'Matrimonio', color: '#000000', width: 2 },
+  union: { label: 'Unión de hecho', color: '#000000', width: 2, dash: '4 4' },
+  separacion: { label: 'Separados (casados)', color: '#000000', width: 2, deco: 'slash' },
+  union_separada: { label: 'Unión de hecho separada', color: '#000000', width: 2, dash: '4 4', deco: 'slash' },
+  divorcio: { label: 'Divorciados', color: '#000000', width: 2, deco: 'slash2' },
 };
 
+export const FILIACION = {
+  biologico: { label: 'Biológico/a', color: '#4b5563', width: 1.5 },
+  adopcion: { label: 'Adoptado/a', color: '#4b5563', width: 1.5, dash: '6 4' },
+  hijastro: { label: 'Hijastro/a', color: '#4b5563', width: 1.5, dash: '2 2' },
+};
+
+export const EMOCION = {
+  indiferente: { label: 'Indiferente / Apático', color: '#1f2937', width: 1.5, dash: '2 3' },
+  distante: { label: 'Distante / Deficiente', color: '#1f2937', width: 1.5, dash: '10 5' },
+  corte: { label: 'Corte de relación / Distanciado', color: '#ef4444', width: 2, deco: 'cut' },
+  discordia: { label: 'Discordia / Conflicto', color: '#ef4444', width: 2, dash: '8 4', deco: 'slash2' },
+  odio: { label: 'Odio', color: '#ef4444', width: 2, dash: '2 3' },
+  armonia: { label: 'Armonía', color: '#10b981', width: 2, deco: 'circle' },
+  amistad: { label: 'Amistad / Cercano', color: '#10b981', width: 2, dash: '6 4' },
+  mejores: { label: 'Mejores amigos / Muy cercanos', color: '#10b981', width: 6, pattern: 'band' },
+  amor: { label: 'Amor', color: '#10b981', width: 2, deco: 'circle' },
+  enamorado: { label: 'Enamorado/a', color: '#10b981', width: 2, deco: 'double-circle' },
+  hostil: { label: 'Hostil', color: '#ef4444', width: 2, pattern: 'zigzag', amp: 4, step: 6 },
+  distante_hostil: { label: 'Distante-Hostil', color: '#ef4444', width: 2, pattern: 'zigzag', amp: 4, step: 6, dash: '3 3' },
+  cercano_hostil: { label: 'Cercano-Hostil', color: '#10b981', width: 2, deco: 'double-circle' },
+  fusionado: { label: 'Fusionado', color: '#ef4444', width: 1.5, pattern: 'triple' },
+  fusionado_hostil: { label: 'Fusionado-Hostil', color: '#ef4444', width: 1.5, pattern: 'triple-zig' },
+  desconfianza: { label: 'Desconfianza', color: '#ef4444', width: 2, pattern: 'zigzag', amp: 2, step: 4 },
+  violencia: { label: 'Violencia', color: '#1f2937', width: 2, pattern: 'zigzag', amp: 5, step: 10, arrow: true },
+  violencia_distancia: { label: 'Violencia a distancia', color: '#ef4444', width: 2, pattern: 'zigzag', amp: 5, step: 10 },
+  violencia_cercana: { label: 'Violencia cercana', color: '#1f2937', width: 2, pattern: 'zigzag', amp: 3, step: 6 },
+  enfocado: { label: 'Enfocado en', color: '#1f2937', width: 1.5, arrow: true },
+  enfocado_neg: { label: 'Enfocado negativamente en', color: '#ef4444', width: 1.5, arrow: true },
+  abuso_sexual: { label: 'Abuso sexual', color: '#1f2937', width: 2, pattern: 'zigzag', amp: 3, step: 6 },
+  abuso_fisico: { label: 'Abuso físico', color: '#ef4444', width: 2, pattern: 'zigzag', amp: 5, step: 10, arrow: true },
+  abuso_emocional: { label: 'Abuso emocional', color: '#1f2937', width: 1.5, arrow: true, deco: 'box-x' },
+  manipulador: { label: 'Manipulador/a', color: '#1f2937', width: 2, pattern: 'zigzag', amp: 3, step: 6, deco: 'x-end' },
+  controlador: { label: 'Controlador/a', color: '#ef4444', width: 1.5, deco: 'box-x' },
+  fan: { label: 'Fan / Admirador(a)', color: '#1f2937', width: 1.5, arrow: true, deco: 'double-circle' },
+};
+
+export const ALL = { ...PAREJA, ...FILIACION, ...EMOCION };
+
+export const GROUPS = [
+  { type: 'pareja', title: 'Pareja', defs: PAREJA },
+  { type: 'filiacion', title: 'Filiación', defs: FILIACION },
+  { type: 'emocion', title: 'Relaciones emocionales', defs: EMOCION },
+];
+
+// Nombres de versiones anteriores, para importar archivos viejos
 export const LEGACY = {
-  parent: 'filiacion',
+  parent: 'biologico',
+  filiacion: 'biologico',
   marriage: 'matrimonio',
   conflict: 'discordia',
   close: 'mejores',
