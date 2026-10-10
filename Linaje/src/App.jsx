@@ -265,8 +265,8 @@ function Deco({ type, color }) {
   }
 }
 
-// La geometría se calcula en viewEdges a partir de las posiciones, no de los puntos
-// de conexión, así que la forma de cada línea no depende de dónde se conectó.
+// La forma de cada línea se decide en viewEdges según su tipo:
+// 'pair' (pareja horizontal), 'bus' (filiación con barra) o 'diag' (relación emocional).
 function RelationEdge({ data, markerEnd }) {
   const def = KINDS[data?.kind] ?? KINDS.filiacion;
   const g = data?.geom;
@@ -277,18 +277,15 @@ function RelationEdge({ data, markerEnd }) {
   let my;
   let angle = 0;
 
-  if (g.type === 'bus') {
-    // Padre → barra horizontal → hijo centrado
-    d = `M ${g.px} ${g.pBottom} L ${g.px} ${g.busY} L ${g.cx} ${g.busY} L ${g.cx} ${g.childTop}`;
-    mx = g.cx;
-    my = g.busY;
-  } else if (g.type === 'pair') {
-    // Línea de pareja: horizontal entre los dos
+  if (g.type === 'pair') {
     d = `M ${g.x1} ${g.y} L ${g.x2} ${g.y}`;
     mx = (g.x1 + g.x2) / 2;
     my = g.y;
+  } else if (g.type === 'bus') {
+    d = `M ${g.px} ${g.pBottom} L ${g.px} ${g.busY} L ${g.cx} ${g.busY} L ${g.cx} ${g.childTop}`;
+    mx = g.cx;
+    my = g.busY;
   } else {
-    // Relación emocional: diagonal de individuo a individuo
     d = `M ${g.x1} ${g.y1} L ${g.x2} ${g.y2}`;
     mx = (g.x1 + g.x2) / 2;
     my = (g.y1 + g.y2) / 2;
@@ -525,7 +522,7 @@ export default function App() {
   const act = useCallback((type, id) => setGraph((g) => ACTIONS[type](g, id)), []);
   const ctx = useMemo(() => ({ act }), [act]);
 
-  // Geometría de cada línea según su tipo
+  // Geometría de cada línea, calculada desde las posiciones de las personas
   const viewEdges = useMemo(() => {
     const box = (n) => ({
       cx: n.position.x + NODE / 2,
@@ -535,6 +532,16 @@ export default function App() {
       top: n.position.y,
       bottom: n.position.y + NODE,
     });
+
+    // ¿Son pareja y están a la misma altura?
+    const isAlignedPair = (a, b) => {
+      const linked = graph.edges.some(
+        (e) =>
+          SPOUSE_KINDS.includes(e.data.kind) &&
+          ((e.source === a.id && e.target === b.id) || (e.source === b.id && e.target === a.id))
+      );
+      return linked && Math.abs(box(a).cy - box(b).cy) < NODE / 2;
+    };
 
     return graph.edges.map((e) => {
       const def = KINDS[e.data?.kind] ?? KINDS.filiacion;
@@ -548,16 +555,41 @@ export default function App() {
         const kind = e.data.kind;
 
         if (PARENT_KINDS.includes(kind)) {
-          const parents = parentsOf(graph, e.target)
-            .map((id) => find(graph.nodes, id))
-            .filter(Boolean)
-            .map(box);
-          const busY = Math.max(...parents.map((p) => p.bottom)) + 35;
-          geom = { type: 'bus', px: A.cx, pBottom: A.bottom, busY, cx: B.cx, childTop: B.top };
-        } else if (SPOUSE_KINDS.includes(kind) && Math.abs(A.cy - B.cy) < NODE / 2) {
+          // Filiación: si el hijo tiene dos padres unidos, la bajada sale del punto medio de su pareja
+          const parentIds = parentsOf(graph, e.target);
+          const parentNodes = parentIds.map((id) => find(graph.nodes, id)).filter(Boolean);
+          const child = box(b);
+
+          if (parentNodes.length === 2 && isAlignedPair(parentNodes[0], parentNodes[1])) {
+            const [L, R] = parentNodes.map(box).sort((x, y) => x.cx - y.cx);
+            const y = (L.cy + R.cy) / 2;
+            const busY = Math.max(L.bottom, R.bottom) + 35;
+            geom = {
+              type: 'bus',
+              px: (L.right + R.left) / 2,
+              pBottom: y,
+              busY,
+              cx: child.cx,
+              childTop: child.top,
+            };
+          } else {
+            const parentBottoms = parentNodes.map((p) => box(p).bottom);
+            const busY = Math.max(...parentBottoms, A.bottom) + 35;
+            geom = {
+              type: 'bus',
+              px: A.cx,
+              pBottom: A.bottom,
+              busY,
+              cx: child.cx,
+              childTop: child.top,
+            };
+          }
+        } else if (SPOUSE_KINDS.includes(kind) && isAlignedPair(a, b)) {
+          // Pareja: línea horizontal recta entre los dos
           const [L, R] = A.cx < B.cx ? [A, B] : [B, A];
-          geom = { type: 'pair', x1: L.right, x2: R.left, y: L.cy };
+          geom = { type: 'pair', x1: L.right, x2: R.left, y: (A.cy + B.cy) / 2 };
         } else {
+          // Relación emocional: diagonal de centro a centro
           geom = { type: 'diag', x1: A.cx, y1: A.cy, x2: B.cx, y2: B.cy };
         }
       }
