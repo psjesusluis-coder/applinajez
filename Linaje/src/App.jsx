@@ -2,128 +2,126 @@ import {
   useState, useCallback, useMemo, useRef, useEffect, useContext, createContext,
 } from 'react';
 import {
-  ReactFlow, Background, Controls, MiniMap, BackgroundVariant, Handle, Position,
-  MarkerType, applyNodeChanges, applyEdgeChanges,
+  ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ViewportPortal, applyNodeChanges,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { KINDS, PARENT_KINDS, PARTNER_KINDS, LEGACY } from './relations.js';
+import { PAREJA, FILIACION, EMOCION, GROUPS, ALL, LEGACY } from './relations.js';
 
-const STORAGE_KEY = 'linaje-genograma-v4';
-const SPOUSE_KINDS = ['matrimonio', 'union', 'divorcio'];
-const SIDES = ['t', 'b', 'l', 'r'];
-const POS = { t: Position.Top, b: Position.Bottom, l: Position.Left, r: Position.Right };
+const STORAGE_KEY = 'linaje-genograma-v5';
 const NODE = 120;
+const HALF = 60;
+const BUS_GAP = 40;     // distancia de la base de los padres a la línea de hermanos
+const GEN_GAP = 200;    // distancia vertical entre generaciones
+const PAIR_GAP = 190;   // distancia horizontal entre pareja
+const SIB_GAP = 170;    // distancia horizontal entre hermanos
 const Ctx = createContext({ act: () => {} });
 
 const uid = () =>
-  globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  globalThis.crypto?.randomUUID?.() ??
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+const find = (list, id) => list.find((n) => n.id === id);
+const byIdMap = (nodes) => Object.fromEntries(nodes.map((n) => [n.id, n]));
+const opposite = (gender) => (gender === 'F' ? 'M' : 'F');
 
 /* ---------- Modelo ---------- */
 
-const find = (nodes, id) => nodes.find((n) => n.id === id);
+const mkLink = (type, a, b, kind) => ({ id: uid(), type, a, b, kind });
+const withNode = (g, node) => ({ ...g, nodes: [...g.nodes, node] });
+const withLink = (g, link) => ({ ...g, links: [...g.links, link] });
 
-function sidesFor(a, b, kind) {
-  if (PARENT_KINDS.includes(kind)) return ['b', 't'];
-  const dx = b.position.x - a.position.x;
-  const dy = b.position.y - a.position.y;
-  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? ['r', 'l'] : ['l', 'r'];
-  return dy >= 0 ? ['b', 't'] : ['t', 'b'];
-}
+const personNode = (id, x, y, data = {}) => ({
+  id,
+  type: 'person',
+  position: { x, y },
+  data: { name: '', year: '', gender: 'M', deceased: false, index: false, ...data },
+});
 
-function makeEdge(nodes, source, target, kind) {
-  const [s, t] = sidesFor(find(nodes, source), find(nodes, target), kind);
-  return {
-    id: uid(),
-    source,
-    target,
-    sourceHandle: `s-${s}`,
-    targetHandle: `s-${t}`,
-    data: { kind },
-  };
-}
+// Padres de una persona: links de filiación donde ella es el hijo (b)
+const parentIds = (g, id) => g.links.filter((l) => l.type === 'filiacion' && l.b === id).map((l) => l.a);
 
-function freeX(nodes, x, y) {
+const spouseIds = (g, id) =>
+  g.links
+    .filter((l) => l.type === 'pareja' && (l.a === id || l.b === id))
+    .map((l) => (l.a === id ? l.b : l.a));
+
+const spouseLinked = (g, a, b) =>
+  g.links.some((l) => l.type === 'pareja' && ((l.a === a && l.b === b) || (l.a === b && l.b === a)));
+
+// Busca un lugar libre en la misma fila para que no se encimen personas
+const overlaps = (nodes, x, y) =>
+  nodes.some((n) => Math.abs(n.position.x - x) < 150 && Math.abs(n.position.y - y) < 100);
+
+const freeX = (nodes, x, y) => {
   let nx = x;
-  while (nodes.some((n) => Math.abs(n.position.x - nx) < 150 && Math.abs(n.position.y - y) < 100)) {
-    nx += 170;
-  }
+  while (overlaps(nodes, nx, y)) nx += 170;
   return nx;
-}
+};
 
-function personNode(id, x, y, data = {}) {
-  return {
-    id,
-    type: 'person',
-    position: { x, y },
-    data: { name: '', year: '', gender: 'M', deceased: false, index: false, ...data },
-  };
-}
+/* ---------- Acciones de los botones ---------- */
 
-const parentsOf = (g, id) =>
-  g.edges.filter((e) => PARENT_KINDS.includes(e.data.kind) && e.target === id).map((e) => e.source);
-
-const partnersOf = (g, id) =>
-  g.edges
-    .filter((e) => PARTNER_KINDS.includes(e.data.kind) && (e.source === id || e.target === id))
-    .map((e) => (e.source === id ? e.target : e.source));
-
-const opposite = (gender) => (gender === 'F' ? 'M' : 'F');
-
-function addParent(g, childId) {
+// + Padre/Madre: si el hijo ya tiene un padre, el nuevo se une a él como pareja
+function addParent(g, childId, newId) {
   const child = find(g.nodes, childId);
-  const existing = parentsOf(g, childId);
-  const first = existing.length ? find(g.nodes, existing[0]) : null;
-  const y = child.position.y - 200;
-  const x = freeX(g.nodes, first ? first.position.x + 180 : child.position.x, y);
-  const id = uid();
-  const nodes = [
-    ...g.nodes,
-    personNode(id, x, y, {
-      name: 'Nuevo padre/madre',
-      gender: first ? opposite(first.data.gender) : 'M',
-    }),
-  ];
-  return { nodes, edges: [...g.edges, makeEdge(nodes, id, childId, 'filiacion')] };
-}
+  const parents = parentIds(g, childId).map((id) => find(g.nodes, id)).filter(Boolean);
 
-function addChild(g, parentId) {
-  const parent = find(g.nodes, parentId);
-  const partners = partnersOf(g, parentId).map((pid) => find(g.nodes, pid)).filter(Boolean);
-  const group = [parent, ...partners];
-  const cx = group.reduce((s, n) => s + n.position.x, 0) / group.length;
-  const y = parent.position.y + 200;
-  const x = freeX(g.nodes, cx, y);
-  const id = uid();
-  const nodes = [...g.nodes, personNode(id, x, y, { name: 'Nuevo hijo/a' })];
-  const parents = [parentId, ...partners.map((p) => p.id)];
-  return {
-    nodes,
-    edges: [...g.edges, ...parents.map((pid) => makeEdge(nodes, pid, id, 'filiacion'))],
-  };
-}
-
-function addPartner(g, personId) {
-  const p = find(g.nodes, personId);
-  const x = freeX(g.nodes, p.position.x + 190, p.position.y);
-  const id = uid();
-  const nodes = [
-    ...g.nodes,
-    personNode(id, x, p.position.y, { name: 'Nueva pareja', gender: opposite(p.data.gender) }),
-  ];
-  return { nodes, edges: [...g.edges, makeEdge(nodes, personId, id, 'matrimonio')] };
-}
-
-function addSibling(g, personId) {
-  let base = g;
-  let [pid] = parentsOf(g, personId);
-  if (!pid) {
-    base = addParent(g, personId);
-    pid = base.nodes[base.nodes.length - 1].id;
+  if (parents.length === 1) {
+    const p = parents[0];
+    const x = freeX(g.nodes, p.position.x + PAIR_GAP, p.position.y);
+    let next = withNode(
+      g,
+      personNode(newId, x, p.position.y, { name: 'Nuevo padre/madre', gender: opposite(p.data.gender) })
+    );
+    next = withLink(next, mkLink('pareja', p.id, newId, 'matrimonio'));
+    return withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
   }
-  return addChild(base, pid);
+
+  const y = child.position.y - GEN_GAP;
+  const x = freeX(g.nodes, child.position.x, y);
+  const next = withNode(g, personNode(newId, x, y, { name: 'Nuevo padre/madre' }));
+  return withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
 }
 
-const ACTIONS = { padre: addParent, hijo: addChild, pareja: addPartner, hermano: addSibling };
+// + Hijo/a: debajo de la persona y de su pareja, centrado
+function addChild(g, parentId, newId) {
+  const parent = find(g.nodes, parentId);
+  const members = [parent, ...spouseIds(g, parentId).map((id) => find(g.nodes, id)).filter(Boolean)];
+  const cx = members.reduce((s, n) => s + n.position.x + HALF, 0) / members.length;
+  const y = parent.position.y + GEN_GAP;
+  const x = freeX(g.nodes, cx - HALF, y);
+  let next = withNode(g, personNode(newId, x, y, { name: 'Nuevo hijo/a' }));
+  for (const m of members) next = withLink(next, mkLink('filiacion', m.id, newId, 'biologico'));
+  return next;
+}
+
+// + Pareja: a la derecha, a la misma altura
+function addSpouse(g, personId, newId) {
+  const p = find(g.nodes, personId);
+  const x = freeX(g.nodes, p.position.x + PAIR_GAP, p.position.y);
+  const next = withNode(
+    g,
+    personNode(newId, x, p.position.y, { name: 'Nueva pareja', gender: opposite(p.data.gender) })
+  );
+  return withLink(next, mkLink('pareja', personId, newId, 'matrimonio'));
+}
+
+// + Hermano/a: a la derecha, a la misma altura, con los mismos padres
+function addSibling(g, personId, newId) {
+  let base = g;
+  let parents = parentIds(g, personId);
+  if (parents.length === 0) {
+    const pid = uid();
+    base = addParent(g, personId, pid);
+    parents = [pid];
+  }
+  const node = find(base.nodes, personId);
+  const x = freeX(base.nodes, node.position.x + SIB_GAP, node.position.y);
+  let next = withNode(base, personNode(newId, x, node.position.y, { name: 'Nuevo hermano/a' }));
+  for (const pid of parents) next = withLink(next, mkLink('filiacion', pid, newId, 'biologico'));
+  return next;
+}
+
+const ACTIONS = { padre: addParent, hijo: addChild, pareja: addSpouse, hermano: addSibling };
 
 /* ---------- Persistencia ---------- */
 
@@ -137,47 +135,57 @@ const SAMPLE = {
     { id: 'hija1', position: { x: 340, y: 400 }, data: { name: 'Sofía García', year: '2008–', gender: 'F' } },
     { id: 'hijo2', position: { x: 560, y: 400 }, data: { name: 'Luis García', year: '2012–', gender: 'M' } },
   ],
-  edges: [
-    { id: 'e1', source: 'abuelo', target: 'abuela', data: { kind: 'matrimonio' } },
-    { id: 'e2', source: 'abuelo', target: 'padre', data: { kind: 'filiacion' } },
-    { id: 'e3', source: 'abuela', target: 'padre', data: { kind: 'filiacion' } },
-    { id: 'e4', source: 'padre', target: 'madre', data: { kind: 'matrimonio' } },
-    { id: 'e5', source: 'padre', target: 'hijo1', data: { kind: 'filiacion' } },
-    { id: 'e6', source: 'madre', target: 'hijo1', data: { kind: 'filiacion' } },
-    { id: 'e7', source: 'padre', target: 'hija1', data: { kind: 'filiacion' } },
-    { id: 'e8', source: 'madre', target: 'hija1', data: { kind: 'filiacion' } },
-    { id: 'e9', source: 'padre', target: 'hijo2', data: { kind: 'filiacion' } },
-    { id: 'e10', source: 'madre', target: 'hijo2', data: { kind: 'filiacion' } },
-    { id: 'e11', source: 'padre', target: 'abuelo', data: { kind: 'discordia' } },
-    { id: 'e12', source: 'madre', target: 'hija1', data: { kind: 'amor' } },
-    { id: 'e13', source: 'hijo1', target: 'hijo2', data: { kind: 'distante' } },
+  links: [
+    { id: 'l1', type: 'pareja', a: 'abuelo', b: 'abuela', kind: 'matrimonio' },
+    { id: 'l2', type: 'filiacion', a: 'abuelo', b: 'padre', kind: 'biologico' },
+    { id: 'l3', type: 'filiacion', a: 'abuela', b: 'padre', kind: 'biologico' },
+    { id: 'l4', type: 'pareja', a: 'padre', b: 'madre', kind: 'matrimonio' },
+    { id: 'l5', type: 'filiacion', a: 'padre', b: 'hijo1', kind: 'biologico' },
+    { id: 'l6', type: 'filiacion', a: 'madre', b: 'hijo1', kind: 'biologico' },
+    { id: 'l7', type: 'filiacion', a: 'padre', b: 'hija1', kind: 'biologico' },
+    { id: 'l8', type: 'filiacion', a: 'madre', b: 'hija1', kind: 'biologico' },
+    { id: 'l9', type: 'filiacion', a: 'padre', b: 'hijo2', kind: 'biologico' },
+    { id: 'l10', type: 'filiacion', a: 'madre', b: 'hijo2', kind: 'biologico' },
+    { id: 'l11', type: 'emocion', a: 'padre', b: 'abuelo', kind: 'discordia' },
+    { id: 'l12', type: 'emocion', a: 'madre', b: 'hija1', kind: 'amor' },
+    { id: 'l13', type: 'emocion', a: 'hijo1', b: 'hijo2', kind: 'distante' },
   ],
 };
+
+// Convierte el formato de versiones anteriores (edges) a links
+function fromLegacy(edges) {
+  const out = [];
+  for (const e of edges) {
+    const raw = e.data?.kind;
+    const k = LEGACY[raw] ?? raw;
+    const a = String(e.source);
+    const b = String(e.target);
+    if (FILIACION[k]) out.push({ type: 'filiacion', a, b, kind: k });
+    else if (PAREJA[k]) out.push({ type: 'pareja', a, b, kind: k });
+    else if (EMOCION[k]) out.push({ type: 'emocion', a, b, kind: k });
+  }
+  return out;
+}
 
 function normalize(data) {
   const nodes = data.nodes.map((n) =>
     personNode(String(n.id), n.position?.x ?? 0, n.position?.y ?? 0, n.data)
   );
   const ids = new Set(nodes.map((n) => n.id));
-  const edges = data.edges
-    .filter((e) => ids.has(String(e.source)) && ids.has(String(e.target)))
-    .map((e) => {
-      const raw = LEGACY[e.data?.kind] ?? e.data?.kind;
-      const kind = KINDS[raw] ? raw : 'filiacion';
-      return { ...makeEdge(nodes, String(e.source), String(e.target), kind), id: e.id ?? uid() };
-    });
-  return { nodes, edges };
+  const raw = Array.isArray(data.links)
+    ? data.links.map((l) => ({ type: l.type, a: String(l.a), b: String(l.b), kind: l.kind }))
+    : fromLegacy(data.edges ?? []);
+  const types = ['pareja', 'filiacion', 'emocion'];
+  const links = raw
+    .filter((l) => types.includes(l.type) && ids.has(l.a) && ids.has(l.b) && ALL[l.kind])
+    .map((l) => ({ id: uid(), ...l }));
+  return { nodes, links };
 }
 
 function serialize(g) {
   return {
     nodes: g.nodes.map((n) => ({ id: n.id, position: n.position, data: n.data })),
-    edges: g.edges.map((e) => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      data: { kind: e.data.kind },
-    })),
+    links: g.links.map((l) => ({ id: l.id, type: l.type, a: l.a, b: l.b, kind: l.kind })),
   };
 }
 
@@ -199,7 +207,6 @@ function PersonNode({ id, data, selected }) {
     'person',
     data.gender === 'F' ? 'person--f' : 'person--m',
     selected && 'is-selected',
-    data.deceased && 'is-dead',
     data.index && 'is-index',
   ]
     .filter(Boolean)
@@ -212,10 +219,11 @@ function PersonNode({ id, data, selected }) {
 
   return (
     <div className={cls}>
-      {SIDES.map((s) => (
-        <Handle key={s} id={`s-${s}`} type="source" position={POS[s]} />
-      ))}
-
+      {data.deceased && (
+        <svg className="dead-line" viewBox="0 0 120 120" aria-hidden="true">
+          <line x1="0" y1="120" x2="120" y2="0" stroke="#1f2937" strokeWidth="2" />
+        </svg>
+      )}
       <div className="person-name">{data.name || 'Sin nombre'}</div>
       {data.year && <div className="person-year">{data.year}</div>}
 
@@ -233,124 +241,312 @@ function PersonNode({ id, data, selected }) {
 
 const nodeTypes = { person: PersonNode };
 
-/* ---------- Arista ---------- */
+/* ---------- Trazos ---------- */
 
-function Deco({ type, color }) {
-  const box = { fill: '#fafaf9', stroke: color, strokeWidth: 1.5 };
-  switch (type) {
-    case 'slash':
-      return <path d="M-5 4 L1 -4 M1 4 L7 -4" stroke={color} strokeWidth={1.5} fill="none" />;
-    case 'bar':
-      return <path d="M-3 -6 V6 M3 -6 V6" stroke={color} strokeWidth={1.5} fill="none" />;
-    case 'circle':
-      return <circle r={4} {...box} />;
+// Dibuja un segmento recto entre dos puntos con su patrón, adorno y punta
+function Segment({ def, x1, y1, x2, y2 }) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.hypot(dx, dy);
+  if (len < 1) return null;
+
+  const ux = dx / len;
+  const uy = dy / len;
+  const nx = -uy;
+  const ny = ux;
+  // Punto a distancia t sobre el segmento, desplazado o lateralmente
+  const P = (t, o = 0) => [x1 + ux * t + nx * o, y1 + uy * t + ny * o];
+  const line = (a, b) => `M ${a[0]} ${a[1]} L ${b[0]} ${b[1]}`;
+  const base = {
+    fill: 'none',
+    stroke: def.color,
+    strokeWidth: def.width,
+    strokeDasharray: def.dash,
+    strokeLinejoin: 'round',
+  };
+
+  const parts = [];
+  let k = 0;
+  const key = () => k++;
+
+  const straight = (o, extra = {}) =>
+    parts.push(<path key={key()} d={line(P(0, o), P(len, o))} {...base} {...extra} />);
+
+  const zig = (o, extra = {}) => {
+    const step = def.step ?? 6;
+    const amp = def.amp ?? 4;
+    const n = Math.max(2, Math.round(len / step));
+    const pts = [];
+    for (let i = 0; i <= n; i++) {
+      const off = i === 0 || i === n ? 0 : i % 2 ? amp : -amp;
+      pts.push(P((len * i) / n, o + off));
+    }
+    parts.push(
+      <path key={key()} d={`M ${pts.map((p) => p.join(' ')).join(' L ')}`} {...base} {...extra} />
+    );
+  };
+
+  switch (def.pattern) {
+    case 'zigzag':
+      zig(0);
+      break;
     case 'double':
-      return (
-        <>
-          <circle cx={-4} r={3.5} {...box} />
-          <circle cx={4} r={3.5} {...box} />
-        </>
+      straight(-1.5);
+      straight(1.5);
+      break;
+    case 'triple':
+      [-3, 0, 3].forEach((o) => straight(o, { strokeWidth: 1.5 }));
+      break;
+    case 'triple-zig':
+      straight(-3, { strokeWidth: 1.5 });
+      straight(3, { strokeWidth: 1.5 });
+      zig(0, { strokeWidth: 1.5 });
+      break;
+    case 'band':
+      parts.push(
+        <path key={key()} d={line(P(0), P(len))} {...base} strokeWidth={6} strokeDasharray={undefined} />
       );
-    case 'box':
-      return (
-        <>
-          <rect x={-5} y={-5} width={10} height={10} {...box} />
-          <path d="M-5 -5 L5 5 M5 -5 L-5 5" stroke={color} strokeWidth={1} fill="none" />
-        </>
+      parts.push(
+        <path
+          key={key()}
+          d={line(P(0), P(len))}
+          fill="none"
+          stroke="#ffffff"
+          strokeWidth={6}
+          strokeDasharray="2 4"
+          opacity={0.35}
+        />
       );
-    case 'x':
-      return <path d="M-6 -6 L6 6 M6 -6 L-6 6" stroke={color} strokeWidth={2} fill="none" />;
+      break;
     default:
-      return null;
+      straight(0);
   }
+
+  // Adornos sobre el punto medio
+  const m = len / 2;
+  const slashAt = (t) =>
+    parts.push(
+      <path key={key()} d={line(P(t - 4, -6), P(t + 4, 6))} fill="none" stroke={def.color} strokeWidth={1.5} />
+    );
+
+  if (def.deco === 'slash') slashAt(m);
+  if (def.deco === 'slash2') {
+    slashAt(m - 3);
+    slashAt(m + 3);
+  }
+  if (def.deco === 'cut') {
+    parts.push(
+      <path key={key()} d={line(P(m, -8), P(m, 8))} fill="none" stroke={def.color} strokeWidth={3} />
+    );
+  }
+  if (def.deco === 'circle') {
+    const [cx, cy] = P(m);
+    parts.push(
+      <circle key={key()} cx={cx} cy={cy} r={4} fill="#ffffff" stroke={def.color} strokeWidth={1.5} />
+    );
+  }
+  if (def.deco === 'double-circle') {
+    [P(m - 4), P(m + 4)].forEach(([cx, cy]) =>
+      parts.push(
+        <circle key={key()} cx={cx} cy={cy} r={3.5} fill="#ffffff" stroke={def.color} strokeWidth={1.5} />
+      )
+    );
+  }
+  if (def.deco === 'box-x') {
+    const [cx, cy] = P(m);
+    parts.push(
+      <rect key={key()} x={cx - 5} y={cy - 5} width={10} height={10} fill="#ffffff" stroke={def.color} strokeWidth={1.2} />
+    );
+    parts.push(
+      <path
+        key={key()}
+        d={`M ${cx - 5} ${cy - 5} L ${cx + 5} ${cy + 5} M ${cx + 5} ${cy - 5} L ${cx - 5} ${cy + 5}`}
+        fill="none"
+        stroke={def.color}
+        strokeWidth={1}
+      />
+    );
+  }
+  if (def.deco === 'x-end') {
+    const a = 6;
+    const d1 = [(ux + nx) * a, (uy + ny) * a];
+    const d2 = [(ux - nx) * a, (uy - ny) * a];
+    parts.push(
+      <path
+        key={key()}
+        d={`M ${x2 - d1[0]} ${y2 - d1[1]} L ${x2 + d1[0]} ${y2 + d1[1]} M ${x2 - d2[0]} ${y2 - d2[1]} L ${x2 + d2[0]} ${y2 + d2[1]}`}
+        fill="none"
+        stroke="#ef4444"
+        strokeWidth={2}
+      />
+    );
+  }
+
+  // Punta de flecha al final
+  if (def.arrow) {
+    const b1 = P(len - 9, 4.5);
+    const b2 = P(len - 9, -4.5);
+    parts.push(
+      <polygon key={key()} points={`${x2},${y2} ${b1[0]},${b1[1]} ${b2[0]},${b2[1]}`} fill={def.color} />
+    );
+  }
+
+  return <g>{parts}</g>;
 }
 
-// La forma de cada línea se decide en viewEdges según su tipo:
-// 'pair' (pareja horizontal), 'bus' (filiación con barra) o 'diag' (relación emocional).
-function RelationEdge({ data, markerEnd }) {
-  const def = KINDS[data?.kind] ?? KINDS.filiacion;
-  const g = data?.geom;
-  if (!g) return null;
+// Punto de salida y llegada en el borde de cada figura (cuadrado o círculo)
+function clipBetween(A, B) {
+  const dx = B.cx - A.cx;
+  const dy = B.cy - A.cy;
+  const d = Math.hypot(dx, dy);
+  if (d < 1) return null;
+  const scale = (n) => (n.gender === 'F' ? HALF / d : HALF / Math.max(Math.abs(dx), Math.abs(dy)));
+  const sa = scale(A);
+  const sb = scale(B);
+  if (sa + sb >= 1) return null;
+  return {
+    x1: A.cx + dx * sa,
+    y1: A.cy + dy * sa,
+    x2: B.cx - dx * sb,
+    y2: B.cy - dy * sb,
+  };
+}
 
-  let d;
-  let mx;
-  let my;
-  let angle = 0;
+/* ---------- Dibujo de estructura y relaciones ---------- */
 
-  if (g.type === 'pair') {
-    d = `M ${g.x1} ${g.y} L ${g.x2} ${g.y}`;
-    mx = (g.x1 + g.x2) / 2;
-    my = g.y;
-  } else if (g.type === 'bus') {
-    d = `M ${g.px} ${g.pBottom} L ${g.px} ${g.busY} L ${g.cx} ${g.busY} L ${g.cx} ${g.childTop}`;
-    mx = g.cx;
-    my = g.busY;
-  } else {
-    d = `M ${g.x1} ${g.y1} L ${g.x2} ${g.y2}`;
-    mx = (g.x1 + g.x2) / 2;
-    my = (g.y1 + g.y2) / 2;
-    angle = (Math.atan2(g.y2 - g.y1, g.x2 - g.x1) * 180) / Math.PI;
-  }
+function Drawings({ graph }) {
+  const byId = byIdMap(graph.nodes);
+  const box = (n) => ({
+    id: n.id,
+    gender: n.data.gender,
+    left: n.position.x,
+    right: n.position.x + NODE,
+    cx: n.position.x + HALF,
+    cy: n.position.y + HALF,
+    top: n.position.y,
+    bottom: n.position.y + NODE,
+  });
+  const out = [];
 
-  const style = { stroke: def.color, strokeWidth: def.width, strokeDasharray: def.dash };
+  // 1. Pareja: línea horizontal recta entre los dos, a la altura de su centro
+  graph.links.forEach((l) => {
+    if (l.type !== 'pareja') return;
+    const A = byId[l.a];
+    const B = byId[l.b];
+    if (!A || !B) return;
+    const [L, R] = [box(A), box(B)].sort((p, q) => p.cx - q.cx);
+    out.push(
+      <Segment key={`p${l.id}`} def={PAREJA[l.kind] ?? PAREJA.matrimonio} x1={L.right} y1={L.cy} x2={R.left} y2={R.cy} />
+    );
+  });
+
+  // 2. Relaciones emocionales: diagonal de individuo a individuo
+  graph.links.forEach((l) => {
+    if (l.type !== 'emocion') return;
+    const A = byId[l.a];
+    const B = byId[l.b];
+    if (!A || !B) return;
+    const s = clipBetween(box(A), box(B));
+    if (!s) return;
+    out.push(<Segment key={`e${l.id}`} def={EMOCION[l.kind] ?? EMOCION.indiferente} {...s} />);
+  });
+
+  // 3. Filiación: se agrupa por familia (pareja o padre/madre único)
+  const fam = {};
+  graph.links.forEach((l) => {
+    if (l.type !== 'filiacion') return;
+    const child = byId[l.b];
+    const par = byId[l.a];
+    if (!child || !par) return;
+
+    const ps = parentIds(graph, child.id).map((id) => byId[id]).filter(Boolean);
+    let key;
+    let ox;
+    let oy;
+    let bottom;
+
+    if (ps.length === 2 && spouseLinked(graph, ps[0].id, ps[1].id)) {
+      // Pareja: la bajada sale del punto medio de la línea de pareja
+      const [L, R] = ps.map(box).sort((p, q) => p.cx - q.cx);
+      key = ps.map((p) => p.id).sort().join('|');
+      ox = (L.right + R.left) / 2;
+      oy = (L.cy + R.cy) / 2;
+      bottom = Math.max(L.bottom, R.bottom);
+    } else {
+      // Un solo padre o madre: la bajada sale de su parte inferior
+      const pb = box(par);
+      key = par.id;
+      ox = pb.cx;
+      oy = pb.bottom;
+      bottom = pb.bottom;
+    }
+
+    if (!fam[key]) fam[key] = { ox, oy, bottom, children: {} };
+    if (!fam[key].children[child.id]) {
+      const cb = box(child);
+      fam[key].children[child.id] = { cx: cb.cx, top: cb.top, kind: l.kind };
+    }
+  });
+
+  Object.entries(fam).forEach(([key, f], i) => {
+    const busY = f.bottom + BUS_GAP;
+    const cxs = Object.values(f.children).map((c) => c.cx);
+    const xmin = Math.min(f.ox, ...cxs);
+    const xmax = Math.max(f.ox, ...cxs);
+
+    // Bajada desde los padres
+    out.push(<Segment key={`fo${i}${key}`} def={FILIACION.biologico} x1={f.ox} y1={f.oy} x2={f.ox} y2={busY} />);
+    // Línea de hermanos
+    out.push(<Segment key={`fb${i}${key}`} def={FILIACION.biologico} x1={xmin} y1={busY} x2={xmax} y2={busY} />);
+    // Bajada a cada hijo, centrada
+    Object.entries(f.children).forEach(([cid, c]) =>
+      out.push(
+        <Segment
+          key={`fc${i}${key}${cid}`}
+          def={FILIACION[c.kind] ?? FILIACION.biologico}
+          x1={c.cx}
+          y1={busY}
+          x2={c.cx}
+          y2={c.top}
+        />
+      )
+    );
+  });
 
   return (
-    <g>
-      <path d={d} fill="none" stroke="transparent" strokeWidth={14} />
-      {def.deco === 'triple' ? (
-        [-3, 0, 3].map((o) => (
-          <path key={o} d={d} fill="none" style={style} transform={`translate(0,${o})`} />
-        ))
-      ) : (
-        <path d={d} fill="none" style={style} markerEnd={markerEnd} />
-      )}
-      {def.deco && def.deco !== 'triple' && (
-        <g transform={`translate(${mx},${my}) rotate(${angle})`}>
-          <Deco type={def.deco} color={def.color} />
-        </g>
-      )}
-    </g>
+    <svg className="drawings">
+      <g>{out}</g>
+    </svg>
   );
 }
-
-const edgeTypes = { rel: RelationEdge };
 
 /* ---------- Paneles ---------- */
 
-function KindOptions() {
-  const entries = Object.entries(KINDS);
+function KindSelect({ options, value, onChange }) {
   return (
-    <>
-      <optgroup label="Vínculos">
-        {entries.filter(([, d]) => d.group === 'vinculo').map(([k, d]) => (
-          <option key={k} value={k}>{d.label}</option>
-        ))}
-      </optgroup>
-      <optgroup label="Emocionales">
-        {entries.filter(([, d]) => d.group === 'emocion').map(([k, d]) => (
-          <option key={k} value={k}>{d.label}</option>
-        ))}
-      </optgroup>
-    </>
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      {Object.entries(options).map(([k, d]) => (
+        <option key={k} value={k}>{d.label}</option>
+      ))}
+    </select>
   );
 }
 
-function Editor({ node, graph, onChange, onDelete, onClose, onEdgeKind, onRemoveEdge, onAddRel }) {
+function Editor({
+  node, graph, onChange, onDelete, onClose, onSetKind, onRemoveLink, onAddEmotion,
+}) {
   const { name = '', year = '', gender = 'M', deceased = false, index = false } = node.data;
+  const byId = byIdMap(graph.nodes);
+  const nameOf = (id) => byId[id]?.data.name || 'Sin nombre';
+
+  const pareja = graph.links.filter((l) => l.type === 'pareja' && (l.a === node.id || l.b === node.id));
+  const padres = graph.links.filter((l) => l.type === 'filiacion' && l.b === node.id);
+  const hijos = graph.links.filter((l) => l.type === 'filiacion' && l.a === node.id).map((l) => nameOf(l.b));
+  const emo = graph.links.filter((l) => l.type === 'emocion' && (l.a === node.id || l.b === node.id));
+
   const [other, setOther] = useState('');
   const [kind, setKind] = useState('amistad');
-  const [role, setRole] = useState('padre');
-
-  const rels = graph.edges.filter((e) => e.source === node.id || e.target === node.id);
-  const nameOf = (id) => find(graph.nodes, id)?.data.name || 'Sin nombre';
-  const isParent = PARENT_KINDS.includes(kind);
-
-  function submit() {
-    if (!other) return;
-    if (isParent && role === 'hijo') onAddRel(other, node.id, kind);
-    else onAddRel(node.id, other, kind);
-    setOther('');
-  }
+  const others = graph.nodes.filter((n) => n.id !== node.id);
 
   return (
     <aside className="editor">
@@ -383,67 +579,97 @@ function Editor({ node, graph, onChange, onDelete, onClose, onEdgeKind, onRemove
         Persona índice (doble borde)
       </label>
 
-      <div className="section-title">Relaciones</div>
-      {rels.length === 0 && <p className="hint">Sin relaciones todavía.</p>}
-      {rels.map((e) => {
-        const otherId = e.source === node.id ? e.target : e.source;
-        return (
-          <div key={e.id} className="rel-row">
-            <div className="rel-info">
-              <small>con {nameOf(otherId)}</small>
-              <select value={e.data.kind} onChange={(ev) => onEdgeKind(e.id, ev.target.value)}>
-                <KindOptions />
-              </select>
-            </div>
-            <button className="ghost" onClick={() => onRemoveEdge(e.id)} title="Quitar" aria-label="Quitar">✕</button>
+      <div className="section-title">Pareja</div>
+      {pareja.length === 0 && <p className="hint">Sin pareja. Usa "+ Pareja" sobre la persona.</p>}
+      {pareja.map((l) => (
+        <div key={l.id} className="rel-row">
+          <div className="rel-info">
+            <small>con {nameOf(l.a === node.id ? l.b : l.a)}</small>
+            <KindSelect options={PAREJA} value={l.kind} onChange={(k) => onSetKind(l.id, k)} />
           </div>
-        );
-      })}
+          <button className="ghost" onClick={() => onRemoveLink(l.id)} aria-label="Quitar">✕</button>
+        </div>
+      ))}
+
+      <div className="section-title">Padres</div>
+      {padres.length === 0 && <p className="hint">Sin padres registrados.</p>}
+      {padres.map((l) => (
+        <div key={l.id} className="rel-row">
+          <div className="rel-info">
+            <small>{nameOf(l.a)}</small>
+            <KindSelect options={FILIACION} value={l.kind} onChange={(k) => onSetKind(l.id, k)} />
+          </div>
+          <button className="ghost" onClick={() => onRemoveLink(l.id)} aria-label="Quitar">✕</button>
+        </div>
+      ))}
+
+      <div className="section-title">Hijos</div>
+      <p className="hint">{hijos.length ? hijos.join(', ') : 'Sin hijos registrados.'}</p>
+
+      <div className="section-title">Relaciones emocionales</div>
+      {emo.length === 0 && <p className="hint">Sin relaciones emocionales.</p>}
+      {emo.map((l) => (
+        <div key={l.id} className="rel-row">
+          <div className="rel-info">
+            <small>con {nameOf(l.a === node.id ? l.b : l.a)}</small>
+            <KindSelect options={EMOCION} value={l.kind} onChange={(k) => onSetKind(l.id, k)} />
+          </div>
+          <button className="ghost" onClick={() => onRemoveLink(l.id)} aria-label="Quitar">✕</button>
+        </div>
+      ))}
 
       <div className="add-rel">
-        <div className="section-title">Agregar relación</div>
+        <div className="section-title">Agregar relación emocional</div>
         <select value={other} onChange={(e) => setOther(e.target.value)}>
           <option value="">Elegir persona…</option>
-          {graph.nodes.filter((n) => n.id !== node.id).map((n) => (
+          {others.map((n) => (
             <option key={n.id} value={n.id}>{n.data.name || 'Sin nombre'}</option>
           ))}
         </select>
-        <select value={kind} onChange={(e) => setKind(e.target.value)}>
-          <KindOptions />
-        </select>
-        {isParent && (
-          <select value={role} onChange={(e) => setRole(e.target.value)}>
-            <option value="padre">Esta persona es padre/madre de la otra</option>
-            <option value="hijo">Esta persona es hijo/a de la otra</option>
-          </select>
-        )}
-        <button className="primary" onClick={submit} disabled={!other}>Conectar</button>
+        <KindSelect options={EMOCION} value={kind} onChange={setKind} />
+        <button
+          className="primary"
+          disabled={!other}
+          onClick={() => {
+            onAddEmotion(node.id, other, kind);
+            setOther('');
+          }}
+        >
+          Agregar relación
+        </button>
       </div>
 
-      <p className="hint">Para quitar una línea del diagrama, selecciónala y pulsa Supr.</p>
       <button className="danger" onClick={onDelete}>Eliminar persona</button>
     </aside>
   );
 }
 
-function Legend({ used, onClose }) {
-  const items = Object.entries(KINDS).filter(([k]) => used.includes(k));
+function Legend({ graph, onClose }) {
+  const used = new Set(graph.links.map((l) => l.kind));
   return (
     <div className="legend">
       <div className="editor-head">
         <strong>Leyenda</strong>
         <button className="ghost" onClick={onClose} aria-label="Ocultar">✕</button>
       </div>
-      {items.length === 0 && <p className="hint">Aún no hay relaciones.</p>}
-      {items.map(([k, d]) => (
-        <div key={k} className="legend-row">
-          <span
-            className="swatch"
-            style={{ borderTop: `${d.width}px ${d.dash ? 'dashed' : 'solid'} ${d.color}` }}
-          />
-          {d.label}
-        </div>
-      ))}
+      {graph.links.length === 0 && <p className="hint">Aún no hay relaciones.</p>}
+      {GROUPS.map((gr) => {
+        const items = Object.entries(gr.defs).filter(([k]) => used.has(k));
+        if (items.length === 0) return null;
+        return (
+          <div key={gr.type}>
+            <div className="legend-title">{gr.title}</div>
+            {items.map(([k, d]) => (
+              <div key={k} className="legend-row">
+                <svg width="44" height="14" className="glyph">
+                  <Segment def={d} x1={2} y1={7} x2={42} y2={7} />
+                </svg>
+                <span>{d.label}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -453,7 +679,6 @@ function Legend({ used, onClose }) {
 export default function App() {
   const [graph, setGraph] = useState(loadInitial);
   const [selectedId, setSelectedId] = useState(null);
-  const [drawKind, setDrawKind] = useState('matrimonio');
   const [showLegend, setShowLegend] = useState(true);
   const fileRef = useRef(null);
 
@@ -470,152 +695,22 @@ export default function App() {
       setGraph((g) => {
         const nodes = applyNodeChanges(changes, g.nodes);
         const ids = new Set(nodes.map((n) => n.id));
-        return { nodes, edges: g.edges.filter((e) => ids.has(e.source) && ids.has(e.target)) };
+        return { ...g, nodes, links: g.links.filter((l) => ids.has(l.a) && ids.has(l.b)) };
       }),
     []
   );
 
-  const onEdgesChange = useCallback(
-    (changes) => setGraph((g) => ({ ...g, edges: applyEdgeChanges(changes, g.edges) })),
-    []
-  );
-
-  const onConnect = useCallback(
-    (params) =>
-      setGraph((g) => {
-        if (params.source === params.target) return g;
-        let source = params.source;
-        let target = params.target;
-        let srcSide = (params.sourceHandle ?? 's-r').slice(2);
-        let tgtSide = (params.targetHandle ?? 's-l').slice(2);
-        const vertical = ['t', 'b'].includes(srcSide) || ['t', 'b'].includes(tgtSide);
-        let kind;
-
-        if (vertical) {
-          kind = drawKind === 'adopcion' ? 'adopcion' : 'filiacion';
-          if (srcSide === 't' || tgtSide === 'b') {
-            [source, target] = [target, source];
-            [srcSide, tgtSide] = [tgtSide, srcSide];
-          }
-        } else {
-          kind = PARENT_KINDS.includes(drawKind) ? 'matrimonio' : drawKind;
-        }
-
-        return {
-          ...g,
-          edges: [
-            ...g.edges,
-            {
-              id: uid(),
-              source,
-              target,
-              sourceHandle: `s-${srcSide}`,
-              targetHandle: `s-${tgtSide}`,
-              data: { kind },
-            },
-          ],
-        };
-      }),
-    [drawKind]
-  );
-
-  const act = useCallback((type, id) => setGraph((g) => ACTIONS[type](g, id)), []);
+  const act = useCallback((type, id) => {
+    const newId = uid();
+    setGraph((g) => ACTIONS[type](g, id, newId));
+  }, []);
   const ctx = useMemo(() => ({ act }), [act]);
-
-  // Geometría de cada línea, calculada desde las posiciones de las personas
-  const viewEdges = useMemo(() => {
-    const box = (n) => ({
-      cx: n.position.x + NODE / 2,
-      cy: n.position.y + NODE / 2,
-      left: n.position.x,
-      right: n.position.x + NODE,
-      top: n.position.y,
-      bottom: n.position.y + NODE,
-    });
-
-    // ¿Son pareja y están a la misma altura?
-    const isAlignedPair = (a, b) => {
-      const linked = graph.edges.some(
-        (e) =>
-          SPOUSE_KINDS.includes(e.data.kind) &&
-          ((e.source === a.id && e.target === b.id) || (e.source === b.id && e.target === a.id))
-      );
-      return linked && Math.abs(box(a).cy - box(b).cy) < NODE / 2;
-    };
-
-    return graph.edges.map((e) => {
-      const def = KINDS[e.data?.kind] ?? KINDS.filiacion;
-      const a = find(graph.nodes, e.source);
-      const b = find(graph.nodes, e.target);
-      let geom = null;
-
-      if (a && b) {
-        const A = box(a);
-        const B = box(b);
-        const kind = e.data.kind;
-
-        if (PARENT_KINDS.includes(kind)) {
-          // Filiación: si el hijo tiene dos padres unidos, la bajada sale del punto medio de su pareja
-          const parentIds = parentsOf(graph, e.target);
-          const parentNodes = parentIds.map((id) => find(graph.nodes, id)).filter(Boolean);
-          const child = box(b);
-
-          if (parentNodes.length === 2 && isAlignedPair(parentNodes[0], parentNodes[1])) {
-            const [L, R] = parentNodes.map(box).sort((x, y) => x.cx - y.cx);
-            const y = (L.cy + R.cy) / 2;
-            const busY = Math.max(L.bottom, R.bottom) + 35;
-            geom = {
-              type: 'bus',
-              px: (L.right + R.left) / 2,
-              pBottom: y,
-              busY,
-              cx: child.cx,
-              childTop: child.top,
-            };
-          } else {
-            const parentBottoms = parentNodes.map((p) => box(p).bottom);
-            const busY = Math.max(...parentBottoms, A.bottom) + 35;
-            geom = {
-              type: 'bus',
-              px: A.cx,
-              pBottom: A.bottom,
-              busY,
-              cx: child.cx,
-              childTop: child.top,
-            };
-          }
-        } else if (SPOUSE_KINDS.includes(kind) && isAlignedPair(a, b)) {
-          // Pareja: línea horizontal recta entre los dos
-          const [L, R] = A.cx < B.cx ? [A, B] : [B, A];
-          geom = { type: 'pair', x1: L.right, x2: R.left, y: (A.cy + B.cy) / 2 };
-        } else {
-          // Relación emocional: diagonal de centro a centro
-          geom = { type: 'diag', x1: A.cx, y1: A.cy, x2: B.cx, y2: B.cy };
-        }
-      }
-
-      return {
-        ...e,
-        type: 'rel',
-        data: { ...e.data, geom },
-        markerEnd: def.arrow ? { type: MarkerType.ArrowClosed, color: def.color } : undefined,
-      };
-    });
-  }, [graph]);
-
-  const usedKinds = useMemo(
-    () => [...new Set(graph.edges.map((e) => e.data?.kind).filter(Boolean))],
-    [graph.edges]
-  );
 
   const selected = find(graph.nodes, selectedId);
 
   function addFree() {
     const id = uid();
-    setGraph((g) => {
-      const x = freeX(g.nodes, 300, 150);
-      return { ...g, nodes: [...g.nodes, personNode(id, x, 150, { name: 'Nueva persona' })] };
-    });
+    setGraph((g) => withNode(g, personNode(id, freeX(g.nodes, 300, 150), 150, { name: 'Nueva persona' })));
     setSelectedId(id);
   }
 
@@ -628,25 +723,26 @@ export default function App() {
 
   function deleteNode(id) {
     setGraph((g) => ({
+      ...g,
       nodes: g.nodes.filter((n) => n.id !== id),
-      edges: g.edges.filter((e) => e.source !== id && e.target !== id),
+      links: g.links.filter((l) => l.a !== id && l.b !== id),
     }));
     setSelectedId(null);
   }
 
-  function removeEdge(id) {
-    setGraph((g) => ({ ...g, edges: g.edges.filter((e) => e.id !== id) }));
+  function removeLink(id) {
+    setGraph((g) => ({ ...g, links: g.links.filter((l) => l.id !== id) }));
   }
 
-  function changeEdgeKind(id, kind) {
+  function setLinkKind(id, kind) {
     setGraph((g) => ({
       ...g,
-      edges: g.edges.map((e) => (e.id === id ? { ...e, data: { ...e.data, kind } } : e)),
+      links: g.links.map((l) => (l.id === id ? { ...l, kind } : l)),
     }));
   }
 
-  function addRel(a, b, kind) {
-    setGraph((g) => ({ ...g, edges: [...g.edges, makeEdge(g.nodes, a, b, kind)] }));
+  function addEmotion(a, b, kind) {
+    setGraph((g) => withLink(g, mkLink('emocion', a, b, kind)));
   }
 
   function exportJson() {
@@ -666,7 +762,7 @@ export default function App() {
     reader.onload = () => {
       try {
         const data = JSON.parse(reader.result);
-        if (!Array.isArray(data.nodes) || !Array.isArray(data.edges)) throw new Error('formato');
+        if (!Array.isArray(data.nodes)) throw new Error('formato');
         setGraph(normalize(data));
         setSelectedId(null);
       } catch {
@@ -679,7 +775,10 @@ export default function App() {
 
   function newGenogram() {
     if (!confirm('¿Crear un genograma nuevo? Se perderá el actual.')) return;
-    setGraph({ nodes: [personNode(uid(), 300, 150, { name: 'Persona índice', index: true })], edges: [] });
+    setGraph({
+      nodes: [personNode(uid(), 300, 150, { name: 'Persona índice', index: true })],
+      links: [],
+    });
     setSelectedId(null);
   }
 
@@ -696,12 +795,6 @@ export default function App() {
           <h1>Linaje</h1>
           <div className="toolbar">
             <button className="primary" onClick={addFree}>+ Persona</button>
-            <label className="kind">
-              Tipo al arrastrar (horizontal)
-              <select value={drawKind} onChange={(e) => setDrawKind(e.target.value)}>
-                <KindOptions />
-              </select>
-            </label>
             <button onClick={() => setShowLegend((v) => !v)}>Leyenda</button>
             <button onClick={exportJson}>Exportar</button>
             <button onClick={() => fileRef.current?.click()}>Importar</button>
@@ -715,24 +808,23 @@ export default function App() {
           <div className="canvas">
             <ReactFlow
               nodes={graph.nodes}
-              edges={viewEdges}
+              edges={[]}
               onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onConnect={onConnect}
-              connectionMode="loose"
-              connectionRadius={40}
+              nodesConnectable={false}
+              nodeTypes={nodeTypes}
               onNodeClick={(_, n) => setSelectedId(n.id)}
               onPaneClick={() => setSelectedId(null)}
-              nodeTypes={nodeTypes}
-              edgeTypes={edgeTypes}
               fitView
               deleteKeyCode={['Backspace', 'Delete']}
             >
               <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#d6d3d1" />
               <Controls />
               <MiniMap pannable zoomable />
+              <ViewportPortal>
+                <Drawings graph={graph} />
+              </ViewportPortal>
             </ReactFlow>
-            {showLegend && <Legend used={usedKinds} onClose={() => setShowLegend(false)} />}
+            {showLegend && <Legend graph={graph} onClose={() => setShowLegend(false)} />}
           </div>
 
           {selected && (
@@ -743,9 +835,9 @@ export default function App() {
               onChange={(patch) => updateNode(selected.id, patch)}
               onDelete={() => deleteNode(selected.id)}
               onClose={() => setSelectedId(null)}
-              onEdgeKind={changeEdgeKind}
-              onRemoveEdge={removeEdge}
-              onAddRel={addRel}
+              onSetKind={setLinkKind}
+              onRemoveLink={removeLink}
+              onAddEmotion={addEmotion}
             />
           )}
         </div>
