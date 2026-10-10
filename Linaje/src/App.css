@@ -66,18 +66,25 @@ body {
 .person.is-selected { box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35); }
 .person.is-index { box-shadow: 0 0 0 3px #fff, 0 0 0 5px #1f2937; }
 .person.is-index.is-selected { box-shadow: 0 0 0 3px #fff, 0 0 0 5px #1f2937, 0 0 0 8px rgba(37, 99, 235, 0.35); }
+
+/* Fallecido: diagonal dentro del cuadro */
 .person.is-dead::after {
   content: '';
   position: absolute;
-  left: -10px;
-  right: -10px;
-  top: 50%;
-  border-top: 2px solid #1f2937;
-  transform: rotate(-25deg);
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    to top right,
+    transparent 47%,
+    #1f2937 48%,
+    #1f2937 52%,
+    transparent 53%
+  );
   pointer-events: none;
 }
-.person-name { font-weight: 600; font-size: 12px; word-break: break-word; }
-.person-year { font-size: 10px; color: #6b7280; margin-top: 2px; }
+
+.person-name { font-weight: 600; font-size: 12px; word-break: break-word; position: relative; z-index: 1; }
+.person-year { font-size: 10px; color: #6b7280; margin-top: 2px; position: relative; z-index: 1; }
 
 /* Puntos de conexión: aparecen al pasar el cursor o seleccionar */
 .react-flow__handle {
@@ -91,7 +98,7 @@ body {
 .person:hover .react-flow__handle,
 .person.is-selected .react-flow__handle { opacity: 1; }
 
-/* Botones alrededor de la persona seleccionada (se mueven con el nodo) */
+/* Botones alrededor de la persona seleccionada */
 .quick {
   position: absolute;
   z-index: 10;
