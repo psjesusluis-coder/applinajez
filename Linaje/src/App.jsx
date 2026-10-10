@@ -14,7 +14,7 @@ import {
 import '@xyflow/react/dist/style.css';
 
 // ============================================================================
-// 1. CONFIGURACIÓN DE TIPOS
+// CONFIGURACIÓN DE TIPOS
 // ============================================================================
 const VINCULOS = {
   matrimonio: { label: 'Matrimonio', color: '#1e293b', width: 2 },
@@ -37,7 +37,7 @@ const ALL_TYPES = { ...VINCULOS, ...RELACIONES };
 const uid = () => Math.random().toString(36).substr(2, 9);
 
 // ============================================================================
-// 2. COMPONENTE: NODO DE PERSONA (Con botones flotantes integrados)
+// COMPONENTE: NODO DE PERSONA
 // ============================================================================
 function PersonNode({ data, selected }) {
   const isFemale = data.gender === 'F';
@@ -58,13 +58,13 @@ function PersonNode({ data, selected }) {
         {data.year && <div className="person-year">{data.year}</div>}
       </div>
 
-      {/* BOTONES FLOTANTES (Solo visibles si está seleccionado) */}
+      {/* BOTONES FLOTANTES */}
       {selected && (
         <>
-          <button className="float-btn float-top nodrag" onClick={(e) => e.stopPropagation()}>+ Padre/Madre</button>
-          <button className="float-btn float-bottom nodrag" onClick={(e) => e.stopPropagation()}>+ Hijo/a</button>
-          <button className="float-btn float-right nodrag" onClick={(e) => e.stopPropagation()}>+ Pareja</button>
-          <button className="float-btn float-left nodrag" onClick={(e) => e.stopPropagation()}>+ Hermano/a</button>
+          <button className="float-btn float-top nodrag" onClick={(e) => { e.stopPropagation(); data.onAddParent?.(); }}>+ Padre/Madre</button>
+          <button className="float-btn float-bottom nodrag" onClick={(e) => { e.stopPropagation(); data.onAddChild?.(); }}>+ Hijo/a</button>
+          <button className="float-btn float-right nodrag" onClick={(e) => { e.stopPropagation(); data.onAddPartner?.(); }}>+ Pareja</button>
+          <button className="float-btn float-left nodrag" onClick={(e) => { e.stopPropagation(); data.onAddSibling?.(); }}>+ Hermano/a</button>
         </>
       )}
     </div>
@@ -72,7 +72,7 @@ function PersonNode({ data, selected }) {
 }
 
 // ============================================================================
-// 3. COMPONENTE: EDGE PERSONALIZADO (Soporta barras de divorcio)
+// COMPONENTE: EDGE PERSONALIZADO
 // ============================================================================
 function CustomEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }) {
   const kind = data?.kind;
@@ -82,7 +82,6 @@ function CustomEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, target
   const midX = (sourceX + targetX) / 2;
   const midY = (sourceY + targetY) / 2;
 
-  // Path de la línea
   const path = isSmooth
     ? `M ${sourceX} ${sourceY} C ${sourceX} ${midY}, ${targetX} ${midY}, ${targetX} ${targetY}`
     : `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`;
@@ -97,7 +96,6 @@ function CustomEdge({ sourceX, sourceY, targetX, targetY, sourcePosition, target
         strokeDasharray={config.dash}
         markerEnd={config.arrow ? { type: MarkerType.ArrowClosed, color: config.color } : undefined}
       />
-      {/* Barras diagonales para Divorcio */}
       {config.deco === 'slash' && (
         <>
           <line x1={midX - 8} y1={midY - 8} x2={midX + 8} y2={midY + 8} stroke={config.color} strokeWidth={2.5} />
@@ -112,7 +110,7 @@ const nodeTypes = { person: PersonNode };
 const edgeTypes = { custom: CustomEdge };
 
 // ============================================================================
-// 4. DATOS INICIALES
+// DATOS INICIALES
 // ============================================================================
 const INITIAL_DATA = {
   nodes: [
@@ -128,7 +126,7 @@ const INITIAL_DATA = {
 };
 
 // ============================================================================
-// 5. APP PRINCIPAL
+// APP PRINCIPAL
 // ============================================================================
 export default function App() {
   const [nodes, setNodes] = useState(INITIAL_DATA.nodes);
@@ -140,7 +138,7 @@ export default function App() {
   // Persistencia
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('linaje-final-v2');
+      const saved = localStorage.getItem('linaje-v3');
       if (saved) {
         const data = JSON.parse(saved);
         setNodes(data.nodes || INITIAL_DATA.nodes);
@@ -150,13 +148,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('linaje-final-v2', JSON.stringify({ nodes, edges }));
+    localStorage.setItem('linaje-v3', JSON.stringify({ nodes, edges }));
   }, [nodes, edges]);
 
   const onNodesChange = useCallback((changes) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
   const onEdgesChange = useCallback((changes) => setEdges((eds) => applyEdgeChanges(changes, eds)), []);
 
-  // Conectar manualmente (arrastrar desde handles)
+  // Conectar manualmente
   const onConnect = useCallback((params) => {
     const sourceHandle = params.sourceHandle;
     let kind = 'matrimonio';
@@ -169,7 +167,22 @@ export default function App() {
     setEdges((eds) => [...eds, newEdge]);
   }, []);
 
-  // --- ACCIONES DE BOTONES FLOTANTES ---
+  // Agregar persona nueva
+  const addPerson = useCallback(() => {
+    const id = uid();
+    setNodes((nds) => [
+      ...nds,
+      {
+        id,
+        type: 'person',
+        position: { x: 400, y: 300 },
+        data: { name: 'Nueva Persona', gender: 'M' },
+      },
+    ]);
+    setSelectedId(id);
+  }, []);
+
+  // Botones flotantes
   const addParent = useCallback(() => {
     if (!selectedId) return;
     const node = nodes.find(n => n.id === selectedId);
@@ -205,7 +218,7 @@ export default function App() {
     setEdges((eds) => [...eds, ...newEdges]);
   }, [selectedId, nodes, edges]);
 
-  // --- ACCIONES DEL PANEL LATERAL ---
+  // Panel lateral
   const updateNodeData = useCallback((nodeId, newData) => {
     setNodes((nds) => nds.map((n) => n.id === nodeId ? { ...n, data: { ...n.data, ...newData } } : n));
   }, []);
@@ -229,7 +242,7 @@ export default function App() {
 
   const removeEdge = useCallback((edgeId) => setEdges((eds) => eds.filter((e) => e.id !== edgeId)), []);
 
-  // --- HERRAMIENTAS ---
+  // Herramientas
   const exportJson = useCallback(() => {
     const blob = new Blob([JSON.stringify({ nodes, edges }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -255,7 +268,7 @@ export default function App() {
     }
   }, []);
 
-  // --- LEYENDA DINÁMICA ---
+  // Leyenda dinámica
   const usedKinds = useMemo(() => {
     const kinds = new Set(edges.map(e => e.data?.kind).filter(Boolean));
     return Array.from(kinds).map(k => ({ key: k, config: ALL_TYPES[k] })).filter(item => item.config);
@@ -264,26 +277,26 @@ export default function App() {
   const selectedNode = nodes.find((n) => n.id === selectedId);
   const otherNodes = nodes.filter((n) => n.id !== selectedId);
 
-  // Asignar eventos a los botones flotantes (truco para que funcionen dentro del nodo)
-  const nodeWithActions = useMemo(() => {
-    if (!selectedNode) return null;
-    return {
-      ...selectedNode,
+  // Asignar acciones a nodos
+  const nodesWithActions = useMemo(() => {
+    return nodes.map(n => ({
+      ...n,
       data: {
-        ...selectedNode.data,
+        ...n.data,
         onAddParent: addParent,
         onAddChild: addChild,
         onAddPartner: addPartner,
         onAddSibling: addSibling,
       }
-    };
-  }, [selectedNode, addParent, addChild, addPartner, addSibling]);
+    }));
+  }, [nodes, addParent, addChild, addPartner, addSibling]);
 
   return (
     <div className="app">
       <header className="topbar">
         <h1>Linaje</h1>
         <div className="toolbar">
+          <button className="primary" onClick={addPerson}>+ Persona</button>
           <button onClick={newGenogram}>Nuevo</button>
           <button onClick={exportJson}>Exportar</button>
           <label className="import-btn">Importar<input type="file" accept=".json" onChange={importJson} hidden /></label>
@@ -293,7 +306,7 @@ export default function App() {
       <div className="body">
         <div className="canvas">
           <ReactFlow
-            nodes={nodes}
+            nodes={nodesWithActions}
             edges={edges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
@@ -309,7 +322,6 @@ export default function App() {
             <MiniMap />
           </ReactFlow>
 
-          {/* Leyenda Dinámica */}
           {usedKinds.length > 0 && (
             <div className="legend">
               <strong>Leyenda</strong>
@@ -323,7 +335,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Panel Lateral */}
         {selectedNode && (
           <aside className="editor">
             <div className="editor-head">
