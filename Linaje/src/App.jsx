@@ -20,7 +20,6 @@ const uid = () =>
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
 
-// Lado de cada extremo: los padres salen por abajo y los hijos entran por arriba
 function sidesFor(a, b, kind) {
   if (PARENT_KINDS.includes(kind)) return ['b', 't'];
   const dx = b.position.x - a.position.x;
@@ -41,7 +40,6 @@ function makeEdge(nodes, source, target, kind) {
   };
 }
 
-// Busca un lugar libre en horizontal para no encimar personas
 function freeX(nodes, x, y) {
   let nx = x;
   while (nodes.some((n) => Math.abs(n.position.x - nx) < 150 && Math.abs(n.position.y - y) < 100)) {
@@ -88,11 +86,14 @@ function addParent(g, childId) {
 
 function addChild(g, parentId) {
   const parent = find(g.nodes, parentId);
+  const partners = partnersOf(g, parentId).map((pid) => find(g.nodes, pid)).filter(Boolean);
+  const group = [parent, ...partners];
+  const cx = group.reduce((s, n) => s + n.position.x, 0) / group.length;
   const y = parent.position.y + 200;
-  const x = freeX(g.nodes, parent.position.x, y);
+  const x = freeX(g.nodes, cx, y);
   const id = uid();
   const nodes = [...g.nodes, personNode(id, x, y, { name: 'Nuevo hijo/a' })];
-  const parents = [parentId, ...partnersOf(g, parentId)];
+  const parents = [parentId, ...partners.map((p) => p.id)];
   return {
     nodes,
     edges: [...g.edges, ...parents.map((pid) => makeEdge(nodes, pid, id, 'filiacion'))],
@@ -103,10 +104,10 @@ function addPartner(g, personId) {
   const p = find(g.nodes, personId);
   const x = freeX(g.nodes, p.position.x + 190, p.position.y);
   const id = uid();
-  const nodes = [...g.nodes, personNode(id, x, p.position.y, {
-    name: 'Nueva pareja',
-    gender: opposite(p.data.gender),
-  })];
+  const nodes = [
+    ...g.nodes,
+    personNode(id, x, p.position.y, { name: 'Nueva pareja', gender: opposite(p.data.gender) }),
+  ];
   return { nodes, edges: [...g.edges, makeEdge(nodes, personId, id, 'matrimonio')] };
 }
 
@@ -169,7 +170,7 @@ function normalize(data) {
 function serialize(g) {
   return {
     nodes: g.nodes.map((n) => ({ id: n.id, position: n.position, data: n.data })),
-    edges: g.edges.map((e) => ({ id: e.id, source: e.source, target: e.target, data: e.data })),
+    edges: g.edges.map((e) => ({ id: e.id, source: e.source, target: e.target, data: { kind: e.data.kind } })),
   };
 }
 
@@ -262,7 +263,17 @@ function RelationEdge({
 }) {
   const def = KINDS[data?.kind] ?? KINDS.filiacion;
   const p = { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition };
-  const [d] = def.smooth ? getSmoothStepPath({ ...p, borderRadius: 0 }) : getStraightPath(p);
+
+  let d;
+  if (PARENT_KINDS.includes(data?.kind) && data?.bus) {
+    // Bajada desde la pareja, línea horizontal compartida y bajada al hijo
+    const { bx, cy, by } = data.bus;
+    d = `M ${bx} ${cy} L ${bx} ${by} L ${targetX} ${by} L ${targetX} ${targetY}`;
+  } else {
+    const [path] = def.smooth ? getSmoothStepPath({ ...p, borderRadius: 0 }) : getStraightPath(p);
+    d = path;
+  }
+
   const mx = (sourceX + targetX) / 2;
   const my = (sourceY + targetY) / 2;
   const angle = (Math.atan2(targetY - sourceY, targetX - sourceX) * 180) / Math.PI;
@@ -270,9 +281,7 @@ function RelationEdge({
 
   return (
     <g>
-      {/* Área invisible más ancha para poder seleccionar la línea */}
       <path d={d} fill="none" stroke="transparent" strokeWidth={14} />
-
       {def.deco === 'triple' ? (
         [-3, 0, 3].map((o) => (
           <path key={o} d={d} fill="none" style={style} transform={`translate(0,${o})`} />
@@ -280,7 +289,6 @@ function RelationEdge({
       ) : (
         <path d={d} fill="none" style={style} markerEnd={markerEnd} />
       )}
-
       {def.deco && def.deco !== 'triple' && (
         <g transform={`translate(${mx},${my}) rotate(${angle})`}>
           <Deco type={def.deco} color={def.color} />
@@ -457,7 +465,6 @@ export default function App() {
     []
   );
 
-  // Arrastre horizontal: crea pareja (o el tipo elegido). Vertical: filiación.
   const onConnect = useCallback(
     (params) =>
       setGraph((g) => {
@@ -471,7 +478,6 @@ export default function App() {
 
         if (vertical) {
           kind = drawKind === 'adopcion' ? 'adopcion' : 'filiacion';
-          // El padre/madre es quien sale por abajo
           if (srcSide === 't' || tgtSide === 'b') {
             [source, target] = [target, source];
             [srcSide, tgtSide] = [tgtSide, srcSide];
@@ -501,18 +507,37 @@ export default function App() {
   const act = useCallback((type, id) => setGraph((g) => ACTIONS[type](g, id)), []);
   const ctx = useMemo(() => ({ act }), [act]);
 
-  const viewEdges = useMemo(
-    () =>
-      graph.edges.map((e) => {
-        const def = KINDS[e.data?.kind] ?? KINDS.filiacion;
-        return {
-          ...e,
-          type: 'rel',
-          markerEnd: def.arrow ? { type: MarkerType.ArrowClosed, color: def.color } : undefined,
-        };
-      }),
-    [graph.edges]
-  );
+  // Calcula la estructura de pareja: bajada desde el punto medio, horizontal compartida
+  const viewEdges = useMemo(() => {
+    const pos = (id) => find(graph.nodes, id)?.position;
+    return graph.edges.map((e) => {
+      const def = KINDS[e.data?.kind] ?? KINDS.filiacion;
+      let bus;
+
+      if (PARENT_KINDS.includes(e.data?.kind)) {
+        const child = pos(e.target);
+        const pts = parentsOf(graph, e.target).map(pos).filter(Boolean);
+        let bx;
+        let cy;
+        if (pts.length >= 2) {
+          bx = (pts[0].x + pts[1].x) / 2 + 60;
+          cy = pts[0].y + 60;
+        } else {
+          const p = pos(e.source);
+          bx = p.x + 60;
+          cy = p.y + 120;
+        }
+        if (child) bus = { bx, cy, by: (cy + child.y) / 2 };
+      }
+
+      return {
+        ...e,
+        type: 'rel',
+        data: { ...e.data, bus },
+        markerEnd: def.arrow ? { type: MarkerType.ArrowClosed, color: def.color } : undefined,
+      };
+    });
+  }, [graph]);
 
   const usedKinds = useMemo(
     () => [...new Set(graph.edges.map((e) => e.data?.kind).filter(Boolean))],
@@ -524,9 +549,8 @@ export default function App() {
   function addFree() {
     const id = uid();
     setGraph((g) => {
-      const y = 150;
-      const x = freeX(g.nodes, 300, y);
-      return { ...g, nodes: [...g.nodes, personNode(id, x, y, { name: 'Nueva persona' })] };
+      const x = freeX(g.nodes, 300, 150);
+      return { ...g, nodes: [...g.nodes, personNode(id, x, 150, { name: 'Nueva persona' })] };
     });
     setSelectedId(id);
   }
@@ -648,19 +672,17 @@ export default function App() {
           </div>
 
           {selected && (
-            <Ctx.Provider value={ctx}>
-              <Editor
-                key={selected.id}
-                node={selected}
-                graph={graph}
-                onChange={(patch) => updateNode(selected.id, patch)}
-                onDelete={() => deleteNode(selected.id)}
-                onClose={() => setSelectedId(null)}
-                onEdgeKind={changeEdgeKind}
-                onRemoveEdge={removeEdge}
-                onAddRel={addRel}
-              />
-            </Ctx.Provider>
+            <Editor
+              key={selected.id}
+              node={selected}
+              graph={graph}
+              onChange={(patch) => updateNode(selected.id, patch)}
+              onDelete={() => deleteNode(selected.id)}
+              onClose={() => setSelectedId(null)}
+              onEdgeKind={changeEdgeKind}
+              onRemoveEdge={removeEdge}
+              onAddRel={addRel}
+            />
           )}
         </div>
       </div>
