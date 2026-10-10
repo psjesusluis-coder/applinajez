@@ -7,7 +7,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { PAREJA, FILIACION, EMOCION, GROUPS, ALL, LEGACY } from './relations.js';
 
-const STORAGE_KEY = 'linaje-genograma-v5';
+const STORAGE_KEY = 'linaje-genograma-v6';
 const NODE = 120;
 const HALF = 60;
 const PAIR_DROP = 30;   // bajada desde la base de cada persona hasta la barra de pareja
@@ -53,11 +53,18 @@ const spouseLinked = (g, a, b) =>
 const overlaps = (nodes, x, y) =>
   nodes.some((n) => Math.abs(n.position.x - x) < 150 && Math.abs(n.position.y - y) < 100);
 
-const freeX = (nodes, x, y) => {
+// Busca un lugar libre en la misma fila, avanzando en la dirección indicada (+1 o -1)
+const freeXDir = (nodes, x, y, dir) => {
   let nx = x;
-  while (overlaps(nodes, nx, y)) nx += 170;
+  while (overlaps(nodes, nx, y)) nx += 170 * dir;
   return nx;
 };
+
+// Lugar para una pareja nueva: el esposo siempre queda a la izquierda, la esposa a la derecha
+function spouseSlot(nodes, p, newGender) {
+  const dir = newGender === 'M' ? -1 : 1;
+  return freeXDir(nodes, p.position.x + dir * PAIR_GAP, p.position.y, dir);
+}
 
 /* ---------- Acciones de los botones ---------- */
 
@@ -68,17 +75,15 @@ function addParent(g, childId, newId) {
 
   if (parents.length === 1) {
     const p = parents[0];
-    const x = freeX(g.nodes, p.position.x + PAIR_GAP, p.position.y);
-    let next = withNode(
-      g,
-      personNode(newId, x, p.position.y, { name: 'Nuevo padre/madre', gender: opposite(p.data.gender) })
-    );
+    const gender = opposite(p.data.gender);
+    const x = spouseSlot(g.nodes, p, gender);
+    let next = withNode(g, personNode(newId, x, p.position.y, { name: 'Nuevo padre/madre', gender }));
     next = withLink(next, mkLink('pareja', p.id, newId, 'matrimonio'));
     return withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
   }
 
   const y = child.position.y - GEN_GAP;
-  const x = freeX(g.nodes, child.position.x, y);
+  const x = freeXDir(g.nodes, child.position.x, y, 1);
   const next = withNode(g, personNode(newId, x, y, { name: 'Nuevo padre/madre' }));
   return withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
 }
@@ -89,20 +94,18 @@ function addChild(g, parentId, newId) {
   const members = [parent, ...spouseIds(g, parentId).map((id) => find(g.nodes, id)).filter(Boolean)];
   const cx = members.reduce((s, n) => s + n.position.x + HALF, 0) / members.length;
   const y = parent.position.y + GEN_GAP;
-  const x = freeX(g.nodes, cx - HALF, y);
+  const x = freeXDir(g.nodes, cx - HALF, y, 1);
   let next = withNode(g, personNode(newId, x, y, { name: 'Nuevo hijo/a' }));
   for (const m of members) next = withLink(next, mkLink('filiacion', m.id, newId, 'biologico'));
   return next;
 }
 
-// + Pareja: a la derecha, a la misma altura
+// + Pareja: el esposo a la izquierda, la esposa a la derecha, a la misma altura
 function addSpouse(g, personId, newId) {
   const p = find(g.nodes, personId);
-  const x = freeX(g.nodes, p.position.x + PAIR_GAP, p.position.y);
-  const next = withNode(
-    g,
-    personNode(newId, x, p.position.y, { name: 'Nueva pareja', gender: opposite(p.data.gender) })
-  );
+  const gender = opposite(p.data.gender);
+  const x = spouseSlot(g.nodes, p, gender);
+  const next = withNode(g, personNode(newId, x, p.position.y, { name: 'Nueva pareja', gender }));
   return withLink(next, mkLink('pareja', personId, newId, 'matrimonio'));
 }
 
@@ -116,7 +119,7 @@ function addSibling(g, personId, newId) {
     parents = [pid];
   }
   const node = find(base.nodes, personId);
-  const x = freeX(base.nodes, node.position.x + SIB_GAP, node.position.y);
+  const x = freeXDir(base.nodes, node.position.x + SIB_GAP, node.position.y, 1);
   let next = withNode(base, personNode(newId, x, node.position.y, { name: 'Nuevo hermano/a' }));
   for (const pid of parents) next = withLink(next, mkLink('filiacion', pid, newId, 'biologico'));
   return next;
@@ -243,7 +246,7 @@ const nodeTypes = { person: PersonNode };
 
 /* ---------- Trazos ---------- */
 
-// Dibuja un segmento recto entre dos puntos con su patrón, adorno y punta
+// Dibuja un segmento recto con su patrón, adorno y punta
 function Segment({ def, x1, y1, x2, y2 }) {
   const dx = x2 - x1;
   const dy = y2 - y1;
@@ -289,6 +292,10 @@ function Segment({ def, x1, y1, x2, y2 }) {
     case 'zigzag':
       zig(0);
       break;
+    case 'double':
+      straight(-1.5);
+      straight(1.5);
+      break;
     case 'triple':
       [-3, 0, 3].forEach((o) => straight(o, { strokeWidth: 1.5 }));
       break;
@@ -327,6 +334,18 @@ function Segment({ def, x1, y1, x2, y2 }) {
   if (def.deco === 'slash2') {
     slashAt(m - 3);
     slashAt(m + 3);
+  }
+  if (def.deco === 'cross') {
+    const [cx, cy] = P(m);
+    parts.push(
+      <path
+        key={key()}
+        d={`M ${cx - 6} ${cy - 6} L ${cx + 6} ${cy + 6} M ${cx + 6} ${cy - 6} L ${cx - 6} ${cy + 6}`}
+        fill="none"
+        stroke={def.color}
+        strokeWidth={1.5}
+      />
+    );
   }
   if (def.deco === 'cut') {
     parts.push(
@@ -423,18 +442,25 @@ function Drawings({ graph }) {
   const out = [];
   const pairPoint = {}; // pairKey -> punto medio de la barra de pareja, para colgar hijos
 
-  // 1. Pareja: U invertida. Baja 30 px desde cada persona, cruza y sube.
+  // 1. Pareja: U invertida. Baja 30 px desde cada persona, cruza horizontalmente y sube.
+  //    El esposo queda a la izquierda, la esposa a la derecha.
   graph.links.forEach((l) => {
     if (l.type !== 'pareja') return;
     const A = byId[l.a];
     const B = byId[l.b];
     if (!A || !B) return;
-    const [L, R] = [box(A), box(B)].sort((p, q) => p.cx - q.cx);
+
+    const [L, R] = [box(A), box(B)].sort((p, q) => {
+      const mp = p.gender === 'M' ? 0 : 1;
+      const mq = q.gender === 'M' ? 0 : 1;
+      return mp - mq || p.cx - q.cx;
+    });
     const yU = Math.max(L.bottom, R.bottom) + PAIR_DROP;
     const def = PAREJA[l.kind] ?? PAREJA.matrimonio;
+    const stemDef = { ...def, deco: undefined };
 
-    out.push(<Segment key={`pl${l.id}`} def={STEM} x1={L.cx} y1={L.bottom} x2={L.cx} y2={yU} />);
-    out.push(<Segment key={`pr${l.id}`} def={STEM} x1={R.cx} y1={R.bottom} x2={R.cx} y2={yU} />);
+    out.push(<Segment key={`pl${l.id}`} def={stemDef} x1={L.cx} y1={L.bottom} x2={L.cx} y2={yU} />);
+    out.push(<Segment key={`pr${l.id}`} def={stemDef} x1={R.cx} y1={R.bottom} x2={R.cx} y2={yU} />);
     out.push(<Segment key={`ph${l.id}`} def={def} x1={L.cx} y1={yU} x2={R.cx} y2={yU} />);
 
     pairPoint[pairKey(l.a, l.b)] = { x: (L.cx + R.cx) / 2, y: yU };
@@ -490,7 +516,351 @@ function Drawings({ graph }) {
     const xmin = Math.min(f.ox, ...cxs);
     const xmax = Math.max(f.ox, ...cxs);
 
-    // Bajada desde la barra de pareja (o desde el padre/madre único)
     out.push(<Segment key={`fo${i}${key}`} def={STEM} x1={f.ox} y1={f.oy} x2={f.ox} y2={busY} />);
-    // Línea de hermanos
-    out.push(<Segment
+    out.push(<Segment key={`fb${i}${key}`} def={STEM} x1={xmin} y1={busY} x2={xmax} y2={busY} />);
+    Object.entries(f.children).forEach(([cid, c]) =>
+      out.push(
+        <Segment
+          key={`fc${i}${key}${cid}`}
+          def={FILIACION[c.kind] ?? FILIACION.biologico}
+          x1={c.cx}
+          y1={busY}
+          x2={c.cx}
+          y2={c.top}
+        />
+      )
+    );
+  });
+
+  return (
+    <svg className="drawings">
+      <g>{out}</g>
+    </svg>
+  );
+}
+
+/* ---------- Paneles ---------- */
+
+function KindSelect({ options, value, onChange }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      {Object.entries(options).map(([k, d]) => (
+        <option key={k} value={k}>{d.label}</option>
+      ))}
+    </select>
+  );
+}
+
+function Editor({
+  node, graph, onChange, onDelete, onClose, onSetKind, onRemoveLink, onAddEmotion,
+}) {
+  const { name = '', year = '', gender = 'M', deceased = false, index = false } = node.data;
+  const byId = byIdMap(graph.nodes);
+  const nameOf = (id) => byId[id]?.data.name || 'Sin nombre';
+
+  const pareja = graph.links.filter((l) => l.type === 'pareja' && (l.a === node.id || l.b === node.id));
+  const padres = graph.links.filter((l) => l.type === 'filiacion' && l.b === node.id);
+  const hijos = graph.links.filter((l) => l.type === 'filiacion' && l.a === node.id).map((l) => nameOf(l.b));
+  const emo = graph.links.filter((l) => l.type === 'emocion' && (l.a === node.id || l.b === node.id));
+
+  const [other, setOther] = useState('');
+  const [kind, setKind] = useState('amistad');
+  const others = graph.nodes.filter((n) => n.id !== node.id);
+
+  return (
+    <aside className="editor">
+      <div className="editor-head">
+        <strong>Editar persona</strong>
+        <button className="ghost" onClick={onClose} aria-label="Cerrar">✕</button>
+      </div>
+
+      <label>
+        Nombre
+        <input value={name} onChange={(e) => onChange({ name: e.target.value })} />
+      </label>
+      <label>
+        Años de vida
+        <input value={year} placeholder="1950–2010" onChange={(e) => onChange({ year: e.target.value })} />
+      </label>
+      <label>
+        Sexo
+        <select value={gender} onChange={(e) => onChange({ gender: e.target.value })}>
+          <option value="M">Hombre (cuadrado)</option>
+          <option value="F">Mujer (círculo)</option>
+        </select>
+      </label>
+      <label className="check">
+        <input type="checkbox" checked={deceased} onChange={(e) => onChange({ deceased: e.target.checked })} />
+        Fallecido/a
+      </label>
+      <label className="check">
+        <input type="checkbox" checked={index} onChange={(e) => onChange({ index: e.target.checked })} />
+        Persona índice (doble borde)
+      </label>
+
+      <div className="section-title">Pareja</div>
+      {pareja.length === 0 && <p className="hint">Sin pareja. Usa "+ Pareja" sobre la persona.</p>}
+      {pareja.map((l) => (
+        <div key={l.id} className="rel-row">
+          <div className="rel-info">
+            <small>con {nameOf(l.a === node.id ? l.b : l.a)}</small>
+            <KindSelect options={PAREJA} value={l.kind} onChange={(k) => onSetKind(l.id, k)} />
+          </div>
+          <button className="ghost" onClick={() => onRemoveLink(l.id)} aria-label="Quitar">✕</button>
+        </div>
+      ))}
+
+      <div className="section-title">Padres</div>
+      {padres.length === 0 && <p className="hint">Sin padres registrados.</p>}
+      {padres.map((l) => (
+        <div key={l.id} className="rel-row">
+          <div className="rel-info">
+            <small>{nameOf(l.a)}</small>
+            <KindSelect options={FILIACION} value={l.kind} onChange={(k) => onSetKind(l.id, k)} />
+          </div>
+          <button className="ghost" onClick={() => onRemoveLink(l.id)} aria-label="Quitar">✕</button>
+        </div>
+      ))}
+
+      <div className="section-title">Hijos</div>
+      <p className="hint">{hijos.length ? hijos.join(', ') : 'Sin hijos registrados.'}</p>
+
+      <div className="section-title">Relaciones emocionales</div>
+      {emo.length === 0 && <p className="hint">Sin relaciones emocionales.</p>}
+      {emo.map((l) => (
+        <div key={l.id} className="rel-row">
+          <div className="rel-info">
+            <small>con {nameOf(l.a === node.id ? l.b : l.a)}</small>
+            <KindSelect options={EMOCION} value={l.kind} onChange={(k) => onSetKind(l.id, k)} />
+          </div>
+          <button className="ghost" onClick={() => onRemoveLink(l.id)} aria-label="Quitar">✕</button>
+        </div>
+      ))}
+
+      <div className="add-rel">
+        <div className="section-title">Agregar relación emocional</div>
+        <select value={other} onChange={(e) => setOther(e.target.value)}>
+          <option value="">Elegir persona…</option>
+          {others.map((n) => (
+            <option key={n.id} value={n.id}>{n.data.name || 'Sin nombre'}</option>
+          ))}
+        </select>
+        <KindSelect options={EMOCION} value={kind} onChange={setKind} />
+        <button
+          className="primary"
+          disabled={!other}
+          onClick={() => {
+            onAddEmotion(node.id, other, kind);
+            setOther('');
+          }}
+        >
+          Agregar relación
+        </button>
+      </div>
+
+      <button className="danger" onClick={onDelete}>Eliminar persona</button>
+    </aside>
+  );
+}
+
+function Legend({ graph, onClose }) {
+  const used = new Set(graph.links.map((l) => l.kind));
+  return (
+    <div className="legend">
+      <div className="editor-head">
+        <strong>Leyenda</strong>
+        <button className="ghost" onClick={onClose} aria-label="Ocultar">✕</button>
+      </div>
+      {graph.links.length === 0 && <p className="hint">Aún no hay relaciones.</p>}
+      {GROUPS.map((gr) => {
+        const items = Object.entries(gr.defs).filter(([k]) => used.has(k));
+        if (items.length === 0) return null;
+        return (
+          <div key={gr.type}>
+            <div className="legend-title">{gr.title}</div>
+            {items.map(([k, d]) => (
+              <div key={k} className="legend-row">
+                <svg width="44" height="14" className="glyph">
+                  <Segment def={d} x1={2} y1={7} x2={42} y2={7} />
+                </svg>
+                <span>{d.label}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------- App ---------- */
+
+export default function App() {
+  const [graph, setGraph] = useState(loadInitial);
+  const [selectedId, setSelectedId] = useState(null);
+  const [showLegend, setShowLegend] = useState(true);
+  const fileRef = useRef(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(serialize(graph)));
+    } catch {
+      /* almacenamiento lleno o bloqueado */
+    }
+  }, [graph]);
+
+  const onNodesChange = useCallback(
+    (changes) =>
+      setGraph((g) => {
+        const nodes = applyNodeChanges(changes, g.nodes);
+        const ids = new Set(nodes.map((n) => n.id));
+        return { ...g, nodes, links: g.links.filter((l) => ids.has(l.a) && ids.has(l.b)) };
+      }),
+    []
+  );
+
+  const act = useCallback((type, id) => {
+    const newId = uid();
+    setGraph((g) => ACTIONS[type](g, id, newId));
+  }, []);
+  const ctx = useMemo(() => ({ act }), [act]);
+
+  const selected = find(graph.nodes, selectedId);
+
+  function addFree() {
+    const id = uid();
+    setGraph((g) => withNode(g, personNode(id, freeXDir(g.nodes, 300, 150, 1), 150, { name: 'Nueva persona' })));
+    setSelectedId(id);
+  }
+
+  function updateNode(id, patch) {
+    setGraph((g) => ({
+      ...g,
+      nodes: g.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n)),
+    }));
+  }
+
+  function deleteNode(id) {
+    setGraph((g) => ({
+      ...g,
+      nodes: g.nodes.filter((n) => n.id !== id),
+      links: g.links.filter((l) => l.a !== id && l.b !== id),
+    }));
+    setSelectedId(null);
+  }
+
+  function removeLink(id) {
+    setGraph((g) => ({ ...g, links: g.links.filter((l) => l.id !== id) }));
+  }
+
+  function setLinkKind(id, kind) {
+    setGraph((g) => ({
+      ...g,
+      links: g.links.map((l) => (l.id === id ? { ...l, kind } : l)),
+    }));
+  }
+
+  function addEmotion(a, b, kind) {
+    setGraph((g) => withLink(g, mkLink('emocion', a, b, kind)));
+  }
+
+  function exportJson() {
+    const blob = new Blob([JSON.stringify(serialize(graph), null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'genograma.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importJson(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (!Array.isArray(data.nodes)) throw new Error('formato');
+        setGraph(normalize(data));
+        setSelectedId(null);
+      } catch {
+        alert('El archivo no es un genograma válido.');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }
+
+  function newGenogram() {
+    if (!confirm('¿Crear un genograma nuevo? Se perderá el actual.')) return;
+    setGraph({
+      nodes: [personNode(uid(), 300, 150, { name: 'Persona índice', index: true })],
+      links: [],
+    });
+    setSelectedId(null);
+  }
+
+  function resetSample() {
+    if (!confirm('¿Restablecer el ejemplo? Se perderán los cambios actuales.')) return;
+    setGraph(normalize(SAMPLE));
+    setSelectedId(null);
+  }
+
+  return (
+    <Ctx.Provider value={ctx}>
+      <div className="app">
+        <header className="topbar">
+          <h1>Linaje</h1>
+          <div className="toolbar">
+            <button className="primary" onClick={addFree}>+ Persona</button>
+            <button onClick={() => setShowLegend((v) => !v)}>Leyenda</button>
+            <button onClick={exportJson}>Exportar</button>
+            <button onClick={() => fileRef.current?.click()}>Importar</button>
+            <input ref={fileRef} type="file" accept="application/json" hidden onChange={importJson} />
+            <button className="ghost" onClick={newGenogram}>Nuevo</button>
+            <button className="ghost" onClick={resetSample}>Ejemplo</button>
+          </div>
+        </header>
+
+        <div className="body">
+          <div className="canvas">
+            <ReactFlow
+              nodes={graph.nodes}
+              edges={[]}
+              onNodesChange={onNodesChange}
+              nodesConnectable={false}
+              nodeTypes={nodeTypes}
+              onNodeClick={(_, n) => setSelectedId(n.id)}
+              onPaneClick={() => setSelectedId(null)}
+              fitView
+              deleteKeyCode={['Backspace', 'Delete']}
+            >
+              <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#d6d3d1" />
+              <Controls />
+              <MiniMap pannable zoomable />
+              <ViewportPortal>
+                <Drawings graph={graph} />
+              </ViewportPortal>
+            </ReactFlow>
+            {showLegend && <Legend graph={graph} onClose={() => setShowLegend(false)} />}
+          </div>
+
+          {selected && (
+            <Editor
+              key={selected.id}
+              node={selected}
+              graph={graph}
+              onChange={(patch) => updateNode(selected.id, patch)}
+              onDelete={() => deleteNode(selected.id)}
+              onClose={() => setSelectedId(null)}
+              onSetKind={setLinkKind}
+              onRemoveLink={removeLink}
+              onAddEmotion={addEmotion}
+            />
+          )}
+        </div>
+      </div>
+    </Ctx.Provider>
+  );
+}
