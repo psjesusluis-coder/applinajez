@@ -11,6 +11,7 @@ import { KINDS, PARENT_KINDS, PARTNER_KINDS, LEGACY } from './relations.js';
 const STORAGE_KEY = 'linaje-genograma-v4';
 const SIDES = ['t', 'b', 'l', 'r'];
 const POS = { t: Position.Top, b: Position.Bottom, l: Position.Left, r: Position.Right };
+const NODE = 120;
 const Ctx = createContext({ act: () => {} });
 
 const uid = () =>
@@ -271,10 +272,9 @@ function RelationEdge({
 
   let d;
   if (PARENT_KINDS.includes(data?.kind) && data?.bus) {
-    // Mismo esquema de los genogramas: bajada desde el punto medio de la pareja,
-    // una línea horizontal compartida por los hermanos y una bajada a cada hijo.
-    const { ax, ay, busY } = data.bus;
-    d = `M ${ax} ${ay} L ${ax} ${busY} L ${targetX} ${busY} L ${targetX} ${targetY}`;
+    // Padre → barra horizontal (a nivel inferior) → hijo centrado debajo
+    const { px, pBottom, busY, cx, childTop } = data.bus;
+    d = `M ${px} ${pBottom} L ${px} ${busY} L ${cx} ${busY} L ${cx} ${childTop}`;
   } else {
     const [path] = def.smooth ? getSmoothStepPath({ ...p, borderRadius: 0 }) : getStraightPath(p);
     d = path;
@@ -513,35 +513,42 @@ export default function App() {
   const act = useCallback((type, id) => setGraph((g) => ACTIONS[type](g, id)), []);
   const ctx = useMemo(() => ({ act }), [act]);
 
-  // Calcula el "bus" de cada familia: un solo punto de salida por pareja
-  // y una sola línea horizontal para todos sus hijos.
+  // Cada hijo recibe la geometría de su familia:
+  // - cada padre baja desde su centro hasta una barra horizontal común (busY)
+  // - desde la barra, una línea baja al centro del hijo
   const viewEdges = useMemo(() => {
-    const pos = (id) => find(graph.nodes, id)?.position;
-
-    const anchors = {};
-    for (const e of graph.edges) {
-      if (!PARENT_KINDS.includes(e.data?.kind)) continue;
-      const ps = parentsOf(graph, e.target).sort();
-      const pts = ps.map(pos).filter(Boolean);
-      const child = pos(e.target);
-      if (!pts.length || !child) continue;
-      const key = ps.join('|');
-      if (!anchors[key]) {
-        const [p0, p1] = pts;
-        anchors[key] = p1
-          ? { ax: (p0.x + p1.x) / 2 + 60, ay: p0.y + 60, minY: child.y }
-          : { ax: p0.x + 60, ay: p0.y + 120, minY: child.y };
-      }
-      anchors[key].minY = Math.min(anchors[key].minY, child.y);
-    }
+    const center = (n) => ({
+      x: n.position.x + NODE / 2,
+      top: n.position.y,
+      bottom: n.position.y + NODE,
+    });
 
     return graph.edges.map((e) => {
       const def = KINDS[e.data?.kind] ?? KINDS.filiacion;
       let bus;
+
       if (PARENT_KINDS.includes(e.data?.kind)) {
-        const a = anchors[parentsOf(graph, e.target).sort().join('|')];
-        if (a) bus = { ax: a.ax, ay: a.ay, busY: a.ay + (a.minY - a.ay) / 2 };
+        const parent = find(graph.nodes, e.source);
+        const child = find(graph.nodes, e.target);
+        const parents = parentsOf(graph, e.target)
+          .map((id) => find(graph.nodes, id))
+          .filter(Boolean);
+
+        if (parent && child && parents.length) {
+          // La barra va por debajo del nivel más bajo de los padres
+          const busY = Math.max(...parents.map((p) => center(p).bottom)) + 35;
+          const pc = center(parent);
+          const cc = center(child);
+          bus = {
+            px: pc.x,
+            pBottom: pc.bottom,
+            busY,
+            cx: cc.x,
+            childTop: cc.top,
+          };
+        }
       }
+
       return {
         ...e,
         type: 'rel',
