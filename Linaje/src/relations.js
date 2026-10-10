@@ -1,7 +1,3 @@
-// Vínculos: estructura familiar. Relaciones: emociones entre personas.
-// group: 'vinculo' | 'emocion'
-// dash: patrón de trazo, deco: adorno en el centro, arrow: flecha, smooth: línea en árbol
-
 export const PARENT_KINDS = ['filiacion', 'adopcion'];
 export const PARTNER_KINDS = ['matrimonio', 'union'];
 
@@ -41,7 +37,6 @@ export const KINDS = {
   fan: { group: 'emocion', label: 'Fan / Admirador(a)', color: '#1f2937', width: 1.5, arrow: true, deco: 'double' },
 };
 
-// Nombres de la primera versión, para importar archivos antiguos
 export const LEGACY = {
   parent: 'filiacion',
   marriage: 'matrimonio',
