@@ -3,12 +3,13 @@ import {
 } from 'react';
 import {
   ReactFlow, Background, Controls, MiniMap, BackgroundVariant, Handle, Position,
-  MarkerType, applyNodeChanges, applyEdgeChanges, getSmoothStepPath, getStraightPath,
+  MarkerType, applyNodeChanges, applyEdgeChanges,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { KINDS, PARENT_KINDS, PARTNER_KINDS, LEGACY } from './relations.js';
 
 const STORAGE_KEY = 'linaje-genograma-v4';
+const SPOUSE_KINDS = ['matrimonio', 'union', 'divorcio'];
 const SIDES = ['t', 'b', 'l', 'r'];
 const POS = { t: Position.Top, b: Position.Bottom, l: Position.Left, r: Position.Right };
 const NODE = 120;
@@ -264,25 +265,36 @@ function Deco({ type, color }) {
   }
 }
 
-function RelationEdge({
-  sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerEnd,
-}) {
+// La geometría se calcula en viewEdges a partir de las posiciones, no de los puntos
+// de conexión, así que la forma de cada línea no depende de dónde se conectó.
+function RelationEdge({ data, markerEnd }) {
   const def = KINDS[data?.kind] ?? KINDS.filiacion;
-  const p = { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition };
+  const g = data?.geom;
+  if (!g) return null;
 
   let d;
-  if (PARENT_KINDS.includes(data?.kind) && data?.bus) {
-    // Padre → barra horizontal (a nivel inferior) → hijo centrado debajo
-    const { px, pBottom, busY, cx, childTop } = data.bus;
-    d = `M ${px} ${pBottom} L ${px} ${busY} L ${cx} ${busY} L ${cx} ${childTop}`;
+  let mx;
+  let my;
+  let angle = 0;
+
+  if (g.type === 'bus') {
+    // Padre → barra horizontal → hijo centrado
+    d = `M ${g.px} ${g.pBottom} L ${g.px} ${g.busY} L ${g.cx} ${g.busY} L ${g.cx} ${g.childTop}`;
+    mx = g.cx;
+    my = g.busY;
+  } else if (g.type === 'pair') {
+    // Línea de pareja: horizontal entre los dos
+    d = `M ${g.x1} ${g.y} L ${g.x2} ${g.y}`;
+    mx = (g.x1 + g.x2) / 2;
+    my = g.y;
   } else {
-    const [path] = def.smooth ? getSmoothStepPath({ ...p, borderRadius: 0 }) : getStraightPath(p);
-    d = path;
+    // Relación emocional: diagonal de individuo a individuo
+    d = `M ${g.x1} ${g.y1} L ${g.x2} ${g.y2}`;
+    mx = (g.x1 + g.x2) / 2;
+    my = (g.y1 + g.y2) / 2;
+    angle = (Math.atan2(g.y2 - g.y1, g.x2 - g.x1) * 180) / Math.PI;
   }
 
-  const mx = (sourceX + targetX) / 2;
-  const my = (sourceY + targetY) / 2;
-  const angle = (Math.atan2(targetY - sourceY, targetX - sourceX) * 180) / Math.PI;
   const style = { stroke: def.color, strokeWidth: def.width, strokeDasharray: def.dash };
 
   return (
@@ -513,46 +525,47 @@ export default function App() {
   const act = useCallback((type, id) => setGraph((g) => ACTIONS[type](g, id)), []);
   const ctx = useMemo(() => ({ act }), [act]);
 
-  // Cada hijo recibe la geometría de su familia:
-  // - cada padre baja desde su centro hasta una barra horizontal común (busY)
-  // - desde la barra, una línea baja al centro del hijo
+  // Geometría de cada línea según su tipo
   const viewEdges = useMemo(() => {
-    const center = (n) => ({
-      x: n.position.x + NODE / 2,
+    const box = (n) => ({
+      cx: n.position.x + NODE / 2,
+      cy: n.position.y + NODE / 2,
+      left: n.position.x,
+      right: n.position.x + NODE,
       top: n.position.y,
       bottom: n.position.y + NODE,
     });
 
     return graph.edges.map((e) => {
       const def = KINDS[e.data?.kind] ?? KINDS.filiacion;
-      let bus;
+      const a = find(graph.nodes, e.source);
+      const b = find(graph.nodes, e.target);
+      let geom = null;
 
-      if (PARENT_KINDS.includes(e.data?.kind)) {
-        const parent = find(graph.nodes, e.source);
-        const child = find(graph.nodes, e.target);
-        const parents = parentsOf(graph, e.target)
-          .map((id) => find(graph.nodes, id))
-          .filter(Boolean);
+      if (a && b) {
+        const A = box(a);
+        const B = box(b);
+        const kind = e.data.kind;
 
-        if (parent && child && parents.length) {
-          // La barra va por debajo del nivel más bajo de los padres
-          const busY = Math.max(...parents.map((p) => center(p).bottom)) + 35;
-          const pc = center(parent);
-          const cc = center(child);
-          bus = {
-            px: pc.x,
-            pBottom: pc.bottom,
-            busY,
-            cx: cc.x,
-            childTop: cc.top,
-          };
+        if (PARENT_KINDS.includes(kind)) {
+          const parents = parentsOf(graph, e.target)
+            .map((id) => find(graph.nodes, id))
+            .filter(Boolean)
+            .map(box);
+          const busY = Math.max(...parents.map((p) => p.bottom)) + 35;
+          geom = { type: 'bus', px: A.cx, pBottom: A.bottom, busY, cx: B.cx, childTop: B.top };
+        } else if (SPOUSE_KINDS.includes(kind) && Math.abs(A.cy - B.cy) < NODE / 2) {
+          const [L, R] = A.cx < B.cx ? [A, B] : [B, A];
+          geom = { type: 'pair', x1: L.right, x2: R.left, y: L.cy };
+        } else {
+          geom = { type: 'diag', x1: A.cx, y1: A.cy, x2: B.cx, y2: B.cy };
         }
       }
 
       return {
         ...e,
         type: 'rel',
-        data: { ...e.data, bus },
+        data: { ...e.data, geom },
         markerEnd: def.arrow ? { type: MarkerType.ArrowClosed, color: def.color } : undefined,
       };
     });
