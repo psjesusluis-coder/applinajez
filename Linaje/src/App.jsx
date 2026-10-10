@@ -10,10 +10,12 @@ import { PAREJA, FILIACION, EMOCION, GROUPS, ALL, LEGACY } from './relations.js'
 const STORAGE_KEY = 'linaje-genograma-v5';
 const NODE = 120;
 const HALF = 60;
-const BUS_GAP = 40;     // distancia de la base de los padres a la línea de hermanos
+const PAIR_DROP = 30;   // bajada desde la base de cada persona hasta la barra de pareja
+const BUS_GAP = 40;     // distancia desde la barra de pareja hasta la línea de hermanos
 const GEN_GAP = 200;    // distancia vertical entre generaciones
-const PAIR_GAP = 190;   // distancia horizontal entre pareja
-const SIB_GAP = 170;    // distancia horizontal entre hermanos
+const PAIR_GAP = 190;   // distancia horizontal de centro a centro en pareja
+const SIB_GAP = 170;    // distancia horizontal de centro a centro entre hermanos
+const STEM = { color: '#000000', width: 2 };
 const Ctx = createContext({ act: () => {} });
 
 const uid = () =>
@@ -23,6 +25,7 @@ const uid = () =>
 const find = (list, id) => list.find((n) => n.id === id);
 const byIdMap = (nodes) => Object.fromEntries(nodes.map((n) => [n.id, n]));
 const opposite = (gender) => (gender === 'F' ? 'M' : 'F');
+const pairKey = (a, b) => [a, b].sort().join('|');
 
 /* ---------- Modelo ---------- */
 
@@ -37,7 +40,6 @@ const personNode = (id, x, y, data = {}) => ({
   data: { name: '', year: '', gender: 'M', deceased: false, index: false, ...data },
 });
 
-// Padres de una persona: links de filiación donde ella es el hijo (b)
 const parentIds = (g, id) => g.links.filter((l) => l.type === 'filiacion' && l.b === id).map((l) => l.a);
 
 const spouseIds = (g, id) =>
@@ -48,7 +50,6 @@ const spouseIds = (g, id) =>
 const spouseLinked = (g, a, b) =>
   g.links.some((l) => l.type === 'pareja' && ((l.a === a && l.b === b) || (l.a === b && l.b === a)));
 
-// Busca un lugar libre en la misma fila para que no se encimen personas
 const overlaps = (nodes, x, y) =>
   nodes.some((n) => Math.abs(n.position.x - x) < 150 && Math.abs(n.position.y - y) < 100);
 
@@ -156,8 +157,7 @@ const SAMPLE = {
 function fromLegacy(edges) {
   const out = [];
   for (const e of edges) {
-    const raw = e.data?.kind;
-    const k = LEGACY[raw] ?? raw;
+    const k = LEGACY[e.data?.kind] ?? e.data?.kind;
     const a = String(e.source);
     const b = String(e.target);
     if (FILIACION[k]) out.push({ type: 'filiacion', a, b, kind: k });
@@ -254,7 +254,6 @@ function Segment({ def, x1, y1, x2, y2 }) {
   const uy = dy / len;
   const nx = -uy;
   const ny = ux;
-  // Punto a distancia t sobre el segmento, desplazado o lateralmente
   const P = (t, o = 0) => [x1 + ux * t + nx * o, y1 + uy * t + ny * o];
   const line = (a, b) => `M ${a[0]} ${a[1]} L ${b[0]} ${b[1]}`;
   const base = {
@@ -290,10 +289,6 @@ function Segment({ def, x1, y1, x2, y2 }) {
     case 'zigzag':
       zig(0);
       break;
-    case 'double':
-      straight(-1.5);
-      straight(1.5);
-      break;
     case 'triple':
       [-3, 0, 3].forEach((o) => straight(o, { strokeWidth: 1.5 }));
       break;
@@ -304,7 +299,7 @@ function Segment({ def, x1, y1, x2, y2 }) {
       break;
     case 'band':
       parts.push(
-        <path key={key()} d={line(P(0), P(len))} {...base} strokeWidth={6} strokeDasharray={undefined} />
+        <path key={key()} d={line(P(0), P(len))} fill="none" stroke={def.color} strokeWidth={6} />
       );
       parts.push(
         <path
@@ -322,7 +317,6 @@ function Segment({ def, x1, y1, x2, y2 }) {
       straight(0);
   }
 
-  // Adornos sobre el punto medio
   const m = len / 2;
   const slashAt = (t) =>
     parts.push(
@@ -382,7 +376,6 @@ function Segment({ def, x1, y1, x2, y2 }) {
     );
   }
 
-  // Punta de flecha al final
   if (def.arrow) {
     const b1 = P(len - 9, 4.5);
     const b2 = P(len - 9, -4.5);
@@ -394,15 +387,16 @@ function Segment({ def, x1, y1, x2, y2 }) {
   return <g>{parts}</g>;
 }
 
-// Punto de salida y llegada en el borde de cada figura (cuadrado o círculo)
+// Punto de salida y llegada en el borde de la figura, para relaciones emocionales
 function clipBetween(A, B) {
   const dx = B.cx - A.cx;
   const dy = B.cy - A.cy;
   const d = Math.hypot(dx, dy);
   if (d < 1) return null;
-  const scale = (n) => (n.gender === 'F' ? HALF / d : HALF / Math.max(Math.abs(dx), Math.abs(dy)));
-  const sa = scale(A);
-  const sb = scale(B);
+  const scaleOf = (n) =>
+    n.gender === 'F' ? HALF / d : HALF / Math.max(Math.abs(dx), Math.abs(dy), 1);
+  const sa = scaleOf(A);
+  const sb = scaleOf(B);
   if (sa + sb >= 1) return null;
   return {
     x1: A.cx + dx * sa,
@@ -427,17 +421,23 @@ function Drawings({ graph }) {
     bottom: n.position.y + NODE,
   });
   const out = [];
+  const pairPoint = {}; // pairKey -> punto medio de la barra de pareja, para colgar hijos
 
-  // 1. Pareja: línea horizontal recta entre los dos, a la altura de su centro
+  // 1. Pareja: U invertida. Baja 30 px desde cada persona, cruza y sube.
   graph.links.forEach((l) => {
     if (l.type !== 'pareja') return;
     const A = byId[l.a];
     const B = byId[l.b];
     if (!A || !B) return;
     const [L, R] = [box(A), box(B)].sort((p, q) => p.cx - q.cx);
-    out.push(
-      <Segment key={`p${l.id}`} def={PAREJA[l.kind] ?? PAREJA.matrimonio} x1={L.right} y1={L.cy} x2={R.left} y2={R.cy} />
-    );
+    const yU = Math.max(L.bottom, R.bottom) + PAIR_DROP;
+    const def = PAREJA[l.kind] ?? PAREJA.matrimonio;
+
+    out.push(<Segment key={`pl${l.id}`} def={STEM} x1={L.cx} y1={L.bottom} x2={L.cx} y2={yU} />);
+    out.push(<Segment key={`pr${l.id}`} def={STEM} x1={R.cx} y1={R.bottom} x2={R.cx} y2={yU} />);
+    out.push(<Segment key={`ph${l.id}`} def={def} x1={L.cx} y1={yU} x2={R.cx} y2={yU} />);
+
+    pairPoint[pairKey(l.a, l.b)] = { x: (L.cx + R.cx) / 2, y: yU };
   });
 
   // 2. Relaciones emocionales: diagonal de individuo a individuo
@@ -451,7 +451,7 @@ function Drawings({ graph }) {
     out.push(<Segment key={`e${l.id}`} def={EMOCION[l.kind] ?? EMOCION.indiferente} {...s} />);
   });
 
-  // 3. Filiación: se agrupa por familia (pareja o padre/madre único)
+  // 3. Filiación: agrupada por familia. Sale del punto medio de la pareja o del padre/madre único.
   const fam = {};
   graph.links.forEach((l) => {
     if (l.type !== 'filiacion') return;
@@ -463,25 +463,21 @@ function Drawings({ graph }) {
     let key;
     let ox;
     let oy;
-    let bottom;
 
     if (ps.length === 2 && spouseLinked(graph, ps[0].id, ps[1].id)) {
-      // Pareja: la bajada sale del punto medio de la línea de pareja
-      const [L, R] = ps.map(box).sort((p, q) => p.cx - q.cx);
-      key = ps.map((p) => p.id).sort().join('|');
-      ox = (L.right + R.left) / 2;
-      oy = (L.cy + R.cy) / 2;
-      bottom = Math.max(L.bottom, R.bottom);
+      key = pairKey(ps[0].id, ps[1].id);
+      const pt = pairPoint[key];
+      if (!pt) return;
+      ox = pt.x;
+      oy = pt.y;
     } else {
-      // Un solo padre o madre: la bajada sale de su parte inferior
       const pb = box(par);
       key = par.id;
       ox = pb.cx;
       oy = pb.bottom;
-      bottom = pb.bottom;
     }
 
-    if (!fam[key]) fam[key] = { ox, oy, bottom, children: {} };
+    if (!fam[key]) fam[key] = { ox, oy, children: {} };
     if (!fam[key].children[child.id]) {
       const cb = box(child);
       fam[key].children[child.id] = { cx: cb.cx, top: cb.top, kind: l.kind };
@@ -489,359 +485,12 @@ function Drawings({ graph }) {
   });
 
   Object.entries(fam).forEach(([key, f], i) => {
-    const busY = f.bottom + BUS_GAP;
+    const busY = f.oy + BUS_GAP;
     const cxs = Object.values(f.children).map((c) => c.cx);
     const xmin = Math.min(f.ox, ...cxs);
     const xmax = Math.max(f.ox, ...cxs);
 
-    // Bajada desde los padres
-    out.push(<Segment key={`fo${i}${key}`} def={FILIACION.biologico} x1={f.ox} y1={f.oy} x2={f.ox} y2={busY} />);
+    // Bajada desde la barra de pareja (o desde el padre/madre único)
+    out.push(<Segment key={`fo${i}${key}`} def={STEM} x1={f.ox} y1={f.oy} x2={f.ox} y2={busY} />);
     // Línea de hermanos
-    out.push(<Segment key={`fb${i}${key}`} def={FILIACION.biologico} x1={xmin} y1={busY} x2={xmax} y2={busY} />);
-    // Bajada a cada hijo, centrada
-    Object.entries(f.children).forEach(([cid, c]) =>
-      out.push(
-        <Segment
-          key={`fc${i}${key}${cid}`}
-          def={FILIACION[c.kind] ?? FILIACION.biologico}
-          x1={c.cx}
-          y1={busY}
-          x2={c.cx}
-          y2={c.top}
-        />
-      )
-    );
-  });
-
-  return (
-    <svg className="drawings">
-      <g>{out}</g>
-    </svg>
-  );
-}
-
-/* ---------- Paneles ---------- */
-
-function KindSelect({ options, value, onChange }) {
-  return (
-    <select value={value} onChange={(e) => onChange(e.target.value)}>
-      {Object.entries(options).map(([k, d]) => (
-        <option key={k} value={k}>{d.label}</option>
-      ))}
-    </select>
-  );
-}
-
-function Editor({
-  node, graph, onChange, onDelete, onClose, onSetKind, onRemoveLink, onAddEmotion,
-}) {
-  const { name = '', year = '', gender = 'M', deceased = false, index = false } = node.data;
-  const byId = byIdMap(graph.nodes);
-  const nameOf = (id) => byId[id]?.data.name || 'Sin nombre';
-
-  const pareja = graph.links.filter((l) => l.type === 'pareja' && (l.a === node.id || l.b === node.id));
-  const padres = graph.links.filter((l) => l.type === 'filiacion' && l.b === node.id);
-  const hijos = graph.links.filter((l) => l.type === 'filiacion' && l.a === node.id).map((l) => nameOf(l.b));
-  const emo = graph.links.filter((l) => l.type === 'emocion' && (l.a === node.id || l.b === node.id));
-
-  const [other, setOther] = useState('');
-  const [kind, setKind] = useState('amistad');
-  const others = graph.nodes.filter((n) => n.id !== node.id);
-
-  return (
-    <aside className="editor">
-      <div className="editor-head">
-        <strong>Editar persona</strong>
-        <button className="ghost" onClick={onClose} aria-label="Cerrar">✕</button>
-      </div>
-
-      <label>
-        Nombre
-        <input value={name} onChange={(e) => onChange({ name: e.target.value })} />
-      </label>
-      <label>
-        Años de vida
-        <input value={year} placeholder="1950–2010" onChange={(e) => onChange({ year: e.target.value })} />
-      </label>
-      <label>
-        Sexo
-        <select value={gender} onChange={(e) => onChange({ gender: e.target.value })}>
-          <option value="M">Hombre (cuadrado)</option>
-          <option value="F">Mujer (círculo)</option>
-        </select>
-      </label>
-      <label className="check">
-        <input type="checkbox" checked={deceased} onChange={(e) => onChange({ deceased: e.target.checked })} />
-        Fallecido/a
-      </label>
-      <label className="check">
-        <input type="checkbox" checked={index} onChange={(e) => onChange({ index: e.target.checked })} />
-        Persona índice (doble borde)
-      </label>
-
-      <div className="section-title">Pareja</div>
-      {pareja.length === 0 && <p className="hint">Sin pareja. Usa "+ Pareja" sobre la persona.</p>}
-      {pareja.map((l) => (
-        <div key={l.id} className="rel-row">
-          <div className="rel-info">
-            <small>con {nameOf(l.a === node.id ? l.b : l.a)}</small>
-            <KindSelect options={PAREJA} value={l.kind} onChange={(k) => onSetKind(l.id, k)} />
-          </div>
-          <button className="ghost" onClick={() => onRemoveLink(l.id)} aria-label="Quitar">✕</button>
-        </div>
-      ))}
-
-      <div className="section-title">Padres</div>
-      {padres.length === 0 && <p className="hint">Sin padres registrados.</p>}
-      {padres.map((l) => (
-        <div key={l.id} className="rel-row">
-          <div className="rel-info">
-            <small>{nameOf(l.a)}</small>
-            <KindSelect options={FILIACION} value={l.kind} onChange={(k) => onSetKind(l.id, k)} />
-          </div>
-          <button className="ghost" onClick={() => onRemoveLink(l.id)} aria-label="Quitar">✕</button>
-        </div>
-      ))}
-
-      <div className="section-title">Hijos</div>
-      <p className="hint">{hijos.length ? hijos.join(', ') : 'Sin hijos registrados.'}</p>
-
-      <div className="section-title">Relaciones emocionales</div>
-      {emo.length === 0 && <p className="hint">Sin relaciones emocionales.</p>}
-      {emo.map((l) => (
-        <div key={l.id} className="rel-row">
-          <div className="rel-info">
-            <small>con {nameOf(l.a === node.id ? l.b : l.a)}</small>
-            <KindSelect options={EMOCION} value={l.kind} onChange={(k) => onSetKind(l.id, k)} />
-          </div>
-          <button className="ghost" onClick={() => onRemoveLink(l.id)} aria-label="Quitar">✕</button>
-        </div>
-      ))}
-
-      <div className="add-rel">
-        <div className="section-title">Agregar relación emocional</div>
-        <select value={other} onChange={(e) => setOther(e.target.value)}>
-          <option value="">Elegir persona…</option>
-          {others.map((n) => (
-            <option key={n.id} value={n.id}>{n.data.name || 'Sin nombre'}</option>
-          ))}
-        </select>
-        <KindSelect options={EMOCION} value={kind} onChange={setKind} />
-        <button
-          className="primary"
-          disabled={!other}
-          onClick={() => {
-            onAddEmotion(node.id, other, kind);
-            setOther('');
-          }}
-        >
-          Agregar relación
-        </button>
-      </div>
-
-      <button className="danger" onClick={onDelete}>Eliminar persona</button>
-    </aside>
-  );
-}
-
-function Legend({ graph, onClose }) {
-  const used = new Set(graph.links.map((l) => l.kind));
-  return (
-    <div className="legend">
-      <div className="editor-head">
-        <strong>Leyenda</strong>
-        <button className="ghost" onClick={onClose} aria-label="Ocultar">✕</button>
-      </div>
-      {graph.links.length === 0 && <p className="hint">Aún no hay relaciones.</p>}
-      {GROUPS.map((gr) => {
-        const items = Object.entries(gr.defs).filter(([k]) => used.has(k));
-        if (items.length === 0) return null;
-        return (
-          <div key={gr.type}>
-            <div className="legend-title">{gr.title}</div>
-            {items.map(([k, d]) => (
-              <div key={k} className="legend-row">
-                <svg width="44" height="14" className="glyph">
-                  <Segment def={d} x1={2} y1={7} x2={42} y2={7} />
-                </svg>
-                <span>{d.label}</span>
-              </div>
-            ))}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/* ---------- App ---------- */
-
-export default function App() {
-  const [graph, setGraph] = useState(loadInitial);
-  const [selectedId, setSelectedId] = useState(null);
-  const [showLegend, setShowLegend] = useState(true);
-  const fileRef = useRef(null);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(serialize(graph)));
-    } catch {
-      /* almacenamiento lleno o bloqueado */
-    }
-  }, [graph]);
-
-  const onNodesChange = useCallback(
-    (changes) =>
-      setGraph((g) => {
-        const nodes = applyNodeChanges(changes, g.nodes);
-        const ids = new Set(nodes.map((n) => n.id));
-        return { ...g, nodes, links: g.links.filter((l) => ids.has(l.a) && ids.has(l.b)) };
-      }),
-    []
-  );
-
-  const act = useCallback((type, id) => {
-    const newId = uid();
-    setGraph((g) => ACTIONS[type](g, id, newId));
-  }, []);
-  const ctx = useMemo(() => ({ act }), [act]);
-
-  const selected = find(graph.nodes, selectedId);
-
-  function addFree() {
-    const id = uid();
-    setGraph((g) => withNode(g, personNode(id, freeX(g.nodes, 300, 150), 150, { name: 'Nueva persona' })));
-    setSelectedId(id);
-  }
-
-  function updateNode(id, patch) {
-    setGraph((g) => ({
-      ...g,
-      nodes: g.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n)),
-    }));
-  }
-
-  function deleteNode(id) {
-    setGraph((g) => ({
-      ...g,
-      nodes: g.nodes.filter((n) => n.id !== id),
-      links: g.links.filter((l) => l.a !== id && l.b !== id),
-    }));
-    setSelectedId(null);
-  }
-
-  function removeLink(id) {
-    setGraph((g) => ({ ...g, links: g.links.filter((l) => l.id !== id) }));
-  }
-
-  function setLinkKind(id, kind) {
-    setGraph((g) => ({
-      ...g,
-      links: g.links.map((l) => (l.id === id ? { ...l, kind } : l)),
-    }));
-  }
-
-  function addEmotion(a, b, kind) {
-    setGraph((g) => withLink(g, mkLink('emocion', a, b, kind)));
-  }
-
-  function exportJson() {
-    const blob = new Blob([JSON.stringify(serialize(graph), null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'genograma.json';
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function importJson(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const data = JSON.parse(reader.result);
-        if (!Array.isArray(data.nodes)) throw new Error('formato');
-        setGraph(normalize(data));
-        setSelectedId(null);
-      } catch {
-        alert('El archivo no es un genograma válido.');
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  }
-
-  function newGenogram() {
-    if (!confirm('¿Crear un genograma nuevo? Se perderá el actual.')) return;
-    setGraph({
-      nodes: [personNode(uid(), 300, 150, { name: 'Persona índice', index: true })],
-      links: [],
-    });
-    setSelectedId(null);
-  }
-
-  function resetSample() {
-    if (!confirm('¿Restablecer el ejemplo? Se perderán los cambios actuales.')) return;
-    setGraph(normalize(SAMPLE));
-    setSelectedId(null);
-  }
-
-  return (
-    <Ctx.Provider value={ctx}>
-      <div className="app">
-        <header className="topbar">
-          <h1>Linaje</h1>
-          <div className="toolbar">
-            <button className="primary" onClick={addFree}>+ Persona</button>
-            <button onClick={() => setShowLegend((v) => !v)}>Leyenda</button>
-            <button onClick={exportJson}>Exportar</button>
-            <button onClick={() => fileRef.current?.click()}>Importar</button>
-            <input ref={fileRef} type="file" accept="application/json" hidden onChange={importJson} />
-            <button className="ghost" onClick={newGenogram}>Nuevo</button>
-            <button className="ghost" onClick={resetSample}>Ejemplo</button>
-          </div>
-        </header>
-
-        <div className="body">
-          <div className="canvas">
-            <ReactFlow
-              nodes={graph.nodes}
-              edges={[]}
-              onNodesChange={onNodesChange}
-              nodesConnectable={false}
-              nodeTypes={nodeTypes}
-              onNodeClick={(_, n) => setSelectedId(n.id)}
-              onPaneClick={() => setSelectedId(null)}
-              fitView
-              deleteKeyCode={['Backspace', 'Delete']}
-            >
-              <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#d6d3d1" />
-              <Controls />
-              <MiniMap pannable zoomable />
-              <ViewportPortal>
-                <Drawings graph={graph} />
-              </ViewportPortal>
-            </ReactFlow>
-            {showLegend && <Legend graph={graph} onClose={() => setShowLegend(false)} />}
-          </div>
-
-          {selected && (
-            <Editor
-              key={selected.id}
-              node={selected}
-              graph={graph}
-              onChange={(patch) => updateNode(selected.id, patch)}
-              onDelete={() => deleteNode(selected.id)}
-              onClose={() => setSelectedId(null)}
-              onSetKind={setLinkKind}
-              onRemoveLink={removeLink}
-              onAddEmotion={addEmotion}
-            />
-          )}
-        </div>
-      </div>
-    </Ctx.Provider>
-  );
-}
+    out.push(<Segment
