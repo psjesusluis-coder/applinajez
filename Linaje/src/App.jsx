@@ -66,8 +66,9 @@ function spouseSlot(nodes, p, newGender) {
   return freeXDir(nodes, p.position.x + dir * PAIR_GAP, p.position.y, dir);
 }
 
-// Recentra a todos los hijos bajo su pareja (o bajo su padre/madre único).
-// La bajada de la pareja sale de este mismo punto medio, así la línea queda recta.
+// Recentra a los hijos de cada familia bajo su punto de salida.
+// El punto de salida es el mismo que usa el dibujo: medio de la pareja, o centro del padre/madre único,
+// o medio entre dos padres no enlazados.
 function relayoutAll(g) {
   const byId = byIdMap(g.nodes);
   const families = {};
@@ -76,16 +77,16 @@ function relayoutAll(g) {
     if (l.type !== 'filiacion') continue;
     const child = byId[l.b];
     if (!child) continue;
-    const parents = parentIds(g, child.id).filter((id) => byId[id]);
+    const parents = parentIds(g, child.id).map((id) => byId[id]).filter(Boolean);
     if (!parents.length) continue;
-    const key = [...parents].sort().join('|');
+    const key = parents.map((p) => p.id).sort().join('|');
     if (!families[key]) families[key] = { parents, children: new Set() };
     families[key].children.add(child.id);
   }
 
   const pos = {};
   for (const fam of Object.values(families)) {
-    const parents = fam.parents.map((id) => byId[id]);
+    const parents = fam.parents;
     const midCx = parents.reduce((s, p) => s + p.position.x + HALF, 0) / parents.length;
     const y = Math.max(...parents.map((p) => p.position.y)) + GEN_GAP;
     const kids = [...fam.children]
@@ -122,7 +123,7 @@ function addParent(g, childId, newId) {
   if (parents.length >= 2) return g;
 
   if (parents.length === 1) {
-    let next = addSpouse(g, parents[0].id, newId);
+    const next = addSpouse(g, parents[0].id, newId);
     return withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
   }
 
@@ -525,51 +526,63 @@ function Drawings({ graph }) {
     out.push(<Segment key={`e${l.id}`} def={EMOCION[l.kind] ?? EMOCION.indiferente} {...s} />);
   });
 
-  // 3. Filiación: agrupada por familia. Sale del punto medio de la pareja o del padre/madre único.
+  // 3. Filiación: UNA familia = UN punto de salida, UNA barra horizontal, UNA bajada por hijo.
+  //    Un hijo se dibuja una sola vez aunque tenga dos padres.
   const fam = {};
-  graph.links.forEach((l) => {
-    if (l.type !== 'filiacion') return;
+  for (const l of graph.links) {
+    if (l.type !== 'filiacion') continue;
     const child = byId[l.b];
-    const par = byId[l.a];
-    if (!child || !par) return;
+    if (!child) continue;
+    const parents = parentIds(graph, child.id).map((id) => byId[id]).filter(Boolean);
+    if (!parents.length) continue;
 
-    const ps = parentIds(graph, child.id).map((id) => byId[id]).filter(Boolean);
-    let key;
-    let ox;
-    let oy;
-
-    if (ps.length === 2 && spouseLinked(graph, ps[0].id, ps[1].id)) {
-      key = pairKey(ps[0].id, ps[1].id);
-      const pt = pairPoint[key];
-      if (!pt) return;
-      ox = pt.x;
-      oy = pt.y;
-    } else {
-      const pb = box(par);
-      key = par.id;
-      ox = pb.cx;
-      oy = pb.bottom;
+    const famKey = parents.map((p) => p.id).sort().join('|');
+    if (!fam[famKey]) {
+      let anchor;
+      if (parents.length === 2 && spouseLinked(graph, parents[0].id, parents[1].id)) {
+        anchor = pairPoint[pairKey(parents[0].id, parents[1].id)];
+      } else if (parents.length === 1) {
+        const pb = box(parents[0]);
+        anchor = { x: pb.cx, y: pb.bottom };
+      } else {
+        const bs = parents.map(box);
+        anchor = {
+          x: bs.reduce((s, b) => s + b.cx, 0) / bs.length,
+          y: Math.max(...bs.map((b) => b.bottom)),
+        };
+      }
+      if (!anchor) continue;
+      fam[famKey] = { anchor, children: {} };
     }
 
-    if (!fam[key]) fam[key] = { ox, oy, children: {} };
-    if (!fam[key].children[child.id]) {
+    if (!fam[famKey].children[child.id]) {
       const cb = box(child);
-      fam[key].children[child.id] = { cx: cb.cx, top: cb.top, kind: l.kind };
+      fam[famKey].children[child.id] = { cx: cb.cx, top: cb.top, kind: l.kind };
     }
-  });
+  }
 
-  Object.entries(fam).forEach(([key, f], i) => {
-    const busY = f.oy + BUS_GAP;
-    const cxs = Object.values(f.children).map((c) => c.cx);
-    const xmin = Math.min(f.ox, ...cxs);
-    const xmax = Math.max(f.ox, ...cxs);
+  Object.entries(fam).forEach(([famKey, f], i) => {
+    const kids = Object.entries(f.children);
+    if (!kids.length) return;
 
-    out.push(<Segment key={`fo${i}${key}`} def={STEM} x1={f.ox} y1={f.oy} x2={f.ox} y2={busY} />);
-    out.push(<Segment key={`fb${i}${key}`} def={STEM} x1={xmin} y1={busY} x2={xmax} y2={busY} />);
-    Object.entries(f.children).forEach(([cid, c]) =>
+    const busY = f.anchor.y + BUS_GAP;
+    const xs = [f.anchor.x, ...kids.map(([, c]) => c.cx)];
+    const xmin = Math.min(...xs);
+    const xmax = Math.max(...xs);
+
+    // Bajada única desde el punto de salida hasta la barra
+    out.push(
+      <Segment key={`fs${i}${famKey}`} def={STEM} x1={f.anchor.x} y1={f.anchor.y} x2={f.anchor.x} y2={busY} />
+    );
+    // Barra horizontal única
+    out.push(
+      <Segment key={`fb${i}${famKey}`} def={STEM} x1={xmin} y1={busY} x2={xmax} y2={busY} />
+    );
+    // Una bajada corta por hijo
+    kids.forEach(([cid, c]) =>
       out.push(
         <Segment
-          key={`fc${i}${key}${cid}`}
+          key={`fc${i}${famKey}${cid}`}
           def={FILIACION[c.kind] ?? FILIACION.biologico}
           x1={c.cx}
           y1={busY}
@@ -734,184 +747,3 @@ function Legend({ graph, onClose }) {
                 <span>{d.label}</span>
               </div>
             ))}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/* ---------- App ---------- */
-
-export default function App() {
-  const [graph, setGraph] = useState(loadInitial);
-  const [selectedId, setSelectedId] = useState(null);
-  const [showLegend, setShowLegend] = useState(true);
-  const fileRef = useRef(null);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(serialize(graph)));
-    } catch {
-      /* almacenamiento lleno o bloqueado */
-    }
-  }, [graph]);
-
-  const onNodesChange = useCallback(
-    (changes) =>
-      setGraph((g) => {
-        const nodes = applyNodeChanges(changes, g.nodes);
-        const ids = new Set(nodes.map((n) => n.id));
-        return { ...g, nodes, links: g.links.filter((l) => ids.has(l.a) && ids.has(l.b)) };
-      }),
-    []
-  );
-
-  // Cada acción se seguida de un recentrado de todas las familias
-  const act = useCallback((type, id) => {
-    const newId = uid();
-    setGraph((g) => relayoutAll(ACTIONS[type](g, id, newId)));
-  }, []);
-  const ctx = useMemo(() => ({ act }), [act]);
-
-  const selected = find(graph.nodes, selectedId);
-
-  function addFree() {
-    const id = uid();
-    setGraph((g) => withNode(g, personNode(id, freeXDir(g.nodes, 300, 150, 1), 150, { name: 'Nueva persona' })));
-    setSelectedId(id);
-  }
-
-  function updateNode(id, patch) {
-    setGraph((g) => ({
-      ...g,
-      nodes: g.nodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n)),
-    }));
-  }
-
-  function deleteNode(id) {
-    setGraph((g) =>
-      relayoutAll({
-        ...g,
-        nodes: g.nodes.filter((n) => n.id !== id),
-        links: g.links.filter((l) => l.a !== id && l.b !== id),
-      })
-    );
-    setSelectedId(null);
-  }
-
-  function removeLink(id) {
-    setGraph((g) => relayoutAll({ ...g, links: g.links.filter((l) => l.id !== id) }));
-  }
-
-  function setLinkKind(id, kind) {
-    setGraph((g) => ({
-      ...g,
-      links: g.links.map((l) => (l.id === id ? { ...l, kind } : l)),
-    }));
-  }
-
-  function addEmotion(a, b, kind) {
-    setGraph((g) => withLink(g, mkLink('emocion', a, b, kind)));
-  }
-
-  function exportJson() {
-    const blob = new Blob([JSON.stringify(serialize(graph), null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'genograma.json';
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function importJson(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const data = JSON.parse(reader.result);
-        if (!Array.isArray(data.nodes)) throw new Error('formato');
-        setGraph(normalize(data));
-        setSelectedId(null);
-      } catch {
-        alert('El archivo no es un genograma válido.');
-      }
-    };
-    reader.readAsText(file);
-    e.target.value = '';
-  }
-
-  function newGenogram() {
-    if (!confirm('¿Crear un genograma nuevo? Se perderá el actual.')) return;
-    setGraph({
-      nodes: [personNode(uid(), 300, 150, { name: 'Persona índice', index: true })],
-      links: [],
-    });
-    setSelectedId(null);
-  }
-
-  function resetSample() {
-    if (!confirm('¿Restablecer el ejemplo? Se perderán los cambios actuales.')) return;
-    setGraph(normalize(SAMPLE));
-    setSelectedId(null);
-  }
-
-  return (
-    <Ctx.Provider value={ctx}>
-      <div className="app">
-        <header className="topbar">
-          <h1>Linaje</h1>
-          <div className="toolbar">
-            <button className="primary" onClick={addFree}>+ Persona</button>
-            <button onClick={() => setShowLegend((v) => !v)}>Leyenda</button>
-            <button onClick={exportJson}>Exportar</button>
-            <button onClick={() => fileRef.current?.click()}>Importar</button>
-            <input ref={fileRef} type="file" accept="application/json" hidden onChange={importJson} />
-            <button className="ghost" onClick={newGenogram}>Nuevo</button>
-            <button className="ghost" onClick={resetSample}>Ejemplo</button>
-          </div>
-        </header>
-
-        <div className="body">
-          <div className="canvas">
-            <ReactFlow
-              nodes={graph.nodes}
-              edges={[]}
-              onNodesChange={onNodesChange}
-              nodesConnectable={false}
-              nodeTypes={nodeTypes}
-              onNodeClick={(_, n) => setSelectedId(n.id)}
-              onPaneClick={() => setSelectedId(null)}
-              fitView
-              deleteKeyCode={['Backspace', 'Delete']}
-            >
-              <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#d6d3d1" />
-              <Controls />
-              <MiniMap pannable zoomable />
-              <ViewportPortal>
-                <Drawings graph={graph} />
-              </ViewportPortal>
-            </ReactFlow>
-            {showLegend && <Legend graph={graph} onClose={() => setShowLegend(false)} />}
-          </div>
-
-          {selected && (
-            <Editor
-              key={selected.id}
-              node={selected}
-              graph={graph}
-              onChange={(patch) => updateNode(selected.id, patch)}
-              onDelete={() => deleteNode(selected.id)}
-              onClose={() => setSelectedId(null)}
-              onSetKind={setLinkKind}
-              onRemoveLink={removeLink}
-              onAddEmotion={addEmotion}
-            />
-          )}
-        </div>
-      </div>
-    </Ctx.Provider>
-  );
-}
