@@ -66,24 +66,41 @@ function spouseSlot(nodes, p, newGender) {
   return freeXDir(nodes, p.position.x + dir * PAIR_GAP, p.position.y, dir);
 }
 
-// Reacomoda a los hijos de una misma familia, centrados bajo la pareja o el padre/madre único
-function layoutFamily(g, parentIdList) {
-  const key = [...parentIdList].sort().join('|');
-  const childIds = [
-    ...new Set(g.links.filter((l) => l.type === 'filiacion' && parentIdList.includes(l.a)).map((l) => l.b)),
-  ].filter((cid) => parentIds(g, cid).slice().sort().join('|') === key);
+// Recentra a todos los hijos bajo su pareja (o bajo su padre/madre único).
+// La bajada de la pareja sale de este mismo punto medio, así la línea queda recta.
+function relayoutAll(g) {
+  const byId = byIdMap(g.nodes);
+  const families = {};
 
-  const parents = parentIdList.map((id) => find(g.nodes, id)).filter(Boolean);
-  if (!parents.length || childIds.length === 0) return g;
+  for (const l of g.links) {
+    if (l.type !== 'filiacion') continue;
+    const child = byId[l.b];
+    if (!child) continue;
+    const parents = parentIds(g, child.id).filter((id) => byId[id]);
+    if (!parents.length) continue;
+    const key = [...parents].sort().join('|');
+    if (!families[key]) families[key] = { parents, children: new Set() };
+    families[key].children.add(child.id);
+  }
 
-  const midX = parents.reduce((s, p) => s + p.position.x + HALF, 0) / parents.length;
-  const y = Math.max(...parents.map((p) => p.position.y)) + GEN_GAP;
-  const n = childIds.length;
   const pos = {};
-  childIds.forEach((id, i) => {
-    pos[id] = { x: midX - HALF + (i - (n - 1) / 2) * SIB_GAP, y };
-  });
-  return { ...g, nodes: g.nodes.map((nd) => (pos[nd.id] ? { ...nd, position: pos[nd.id] } : nd)) };
+  for (const fam of Object.values(families)) {
+    const parents = fam.parents.map((id) => byId[id]);
+    const midCx = parents.reduce((s, p) => s + p.position.x + HALF, 0) / parents.length;
+    const y = Math.max(...parents.map((p) => p.position.y)) + GEN_GAP;
+    const kids = [...fam.children]
+      .map((id) => byId[id])
+      .sort((a, b) => a.position.x - b.position.x);
+    const n = kids.length;
+    kids.forEach((kid, i) => {
+      pos[kid.id] = { x: midCx - HALF + (i - (n - 1) / 2) * SIB_GAP, y };
+    });
+  }
+
+  return {
+    ...g,
+    nodes: g.nodes.map((n) => (pos[n.id] ? { ...n, position: pos[n.id] } : n)),
+  };
 }
 
 /* ---------- Acciones de los botones ---------- */
@@ -106,8 +123,7 @@ function addParent(g, childId, newId) {
 
   if (parents.length === 1) {
     let next = addSpouse(g, parents[0].id, newId);
-    next = withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
-    return layoutFamily(next, [parents[0].id, newId]);
+    return withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
   }
 
   const child = find(g.nodes, childId);
@@ -116,8 +132,7 @@ function addParent(g, childId, newId) {
   const sp = uid();
   next = addSpouse(next, newId, sp);
   next = withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
-  next = withLink(next, mkLink('filiacion', sp, childId, 'biologico'));
-  return layoutFamily(next, [newId, sp]);
+  return withLink(next, mkLink('filiacion', sp, childId, 'biologico'));
 }
 
 // Agrega un hijo a los padres indicados. Si solo hay un padre, crea su pareja del sexo opuesto.
@@ -138,7 +153,7 @@ function addChildWithParents(g, parents, newId, name) {
 
   let next = withNode(base, personNode(newId, 0, 0, { name }));
   for (const pid of pids) next = withLink(next, mkLink('filiacion', pid, newId, 'biologico'));
-  return layoutFamily(next, pids);
+  return next;
 }
 
 // + Hijo/a
@@ -215,7 +230,7 @@ function normalize(data) {
   const links = raw
     .filter((l) => types.includes(l.type) && ids.has(l.a) && ids.has(l.b) && ALL[l.kind])
     .map((l) => ({ id: uid(), ...l }));
-  return { nodes, links };
+  return relayoutAll({ nodes, links });
 }
 
 function serialize(g) {
@@ -473,7 +488,7 @@ function Drawings({ graph }) {
     bottom: n.position.y + NODE,
   });
   const out = [];
-  const pairPoint = {}; // pairKey -> punto medio de la barra de pareja, para colgar hijos
+  const pairPoint = {}; // pairKey -> punto medio de la barra de pareja
 
   // 1. Pareja: U invertida. Baja 30 px desde cada persona, cruza horizontalmente y sube.
   //    El esposo queda a la izquierda, la esposa a la derecha.
@@ -752,9 +767,10 @@ export default function App() {
     []
   );
 
+  // Cada acción se seguida de un recentrado de todas las familias
   const act = useCallback((type, id) => {
     const newId = uid();
-    setGraph((g) => ACTIONS[type](g, id, newId));
+    setGraph((g) => relayoutAll(ACTIONS[type](g, id, newId)));
   }, []);
   const ctx = useMemo(() => ({ act }), [act]);
 
@@ -774,16 +790,18 @@ export default function App() {
   }
 
   function deleteNode(id) {
-    setGraph((g) => ({
-      ...g,
-      nodes: g.nodes.filter((n) => n.id !== id),
-      links: g.links.filter((l) => l.a !== id && l.b !== id),
-    }));
+    setGraph((g) =>
+      relayoutAll({
+        ...g,
+        nodes: g.nodes.filter((n) => n.id !== id),
+        links: g.links.filter((l) => l.a !== id && l.b !== id),
+      })
+    );
     setSelectedId(null);
   }
 
   function removeLink(id) {
-    setGraph((g) => ({ ...g, links: g.links.filter((l) => l.id !== id) }));
+    setGraph((g) => relayoutAll({ ...g, links: g.links.filter((l) => l.id !== id) }));
   }
 
   function setLinkKind(id, kind) {
