@@ -66,39 +66,27 @@ function spouseSlot(nodes, p, newGender) {
   return freeXDir(nodes, p.position.x + dir * PAIR_GAP, p.position.y, dir);
 }
 
+// Reacomoda a los hijos de una misma familia, centrados bajo la pareja o el padre/madre único
+function layoutFamily(g, parentIdList) {
+  const key = [...parentIdList].sort().join('|');
+  const childIds = [
+    ...new Set(g.links.filter((l) => l.type === 'filiacion' && parentIdList.includes(l.a)).map((l) => l.b)),
+  ].filter((cid) => parentIds(g, cid).slice().sort().join('|') === key);
+
+  const parents = parentIdList.map((id) => find(g.nodes, id)).filter(Boolean);
+  if (!parents.length || childIds.length === 0) return g;
+
+  const midX = parents.reduce((s, p) => s + p.position.x + HALF, 0) / parents.length;
+  const y = Math.max(...parents.map((p) => p.position.y)) + GEN_GAP;
+  const n = childIds.length;
+  const pos = {};
+  childIds.forEach((id, i) => {
+    pos[id] = { x: midX - HALF + (i - (n - 1) / 2) * SIB_GAP, y };
+  });
+  return { ...g, nodes: g.nodes.map((nd) => (pos[nd.id] ? { ...nd, position: pos[nd.id] } : nd)) };
+}
+
 /* ---------- Acciones de los botones ---------- */
-
-// + Padre/Madre: si el hijo ya tiene un padre, el nuevo se une a él como pareja
-function addParent(g, childId, newId) {
-  const child = find(g.nodes, childId);
-  const parents = parentIds(g, childId).map((id) => find(g.nodes, id)).filter(Boolean);
-
-  if (parents.length === 1) {
-    const p = parents[0];
-    const gender = opposite(p.data.gender);
-    const x = spouseSlot(g.nodes, p, gender);
-    let next = withNode(g, personNode(newId, x, p.position.y, { name: 'Nuevo padre/madre', gender }));
-    next = withLink(next, mkLink('pareja', p.id, newId, 'matrimonio'));
-    return withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
-  }
-
-  const y = child.position.y - GEN_GAP;
-  const x = freeXDir(g.nodes, child.position.x, y, 1);
-  const next = withNode(g, personNode(newId, x, y, { name: 'Nuevo padre/madre' }));
-  return withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
-}
-
-// + Hijo/a: debajo de la persona y de su pareja, centrado
-function addChild(g, parentId, newId) {
-  const parent = find(g.nodes, parentId);
-  const members = [parent, ...spouseIds(g, parentId).map((id) => find(g.nodes, id)).filter(Boolean)];
-  const cx = members.reduce((s, n) => s + n.position.x + HALF, 0) / members.length;
-  const y = parent.position.y + GEN_GAP;
-  const x = freeXDir(g.nodes, cx - HALF, y, 1);
-  let next = withNode(g, personNode(newId, x, y, { name: 'Nuevo hijo/a' }));
-  for (const m of members) next = withLink(next, mkLink('filiacion', m.id, newId, 'biologico'));
-  return next;
-}
 
 // + Pareja: el esposo a la izquierda, la esposa a la derecha, a la misma altura
 function addSpouse(g, personId, newId) {
@@ -109,20 +97,65 @@ function addSpouse(g, personId, newId) {
   return withLink(next, mkLink('pareja', personId, newId, 'matrimonio'));
 }
 
-// + Hermano/a: a la derecha, a la misma altura, con los mismos padres
+// + Padre/Madre
+// - Si el hijo tiene un padre, el nuevo es su pareja del sexo opuesto.
+// - Si no tiene padres, se crean los dos (un padre y su pareja).
+function addParent(g, childId, newId) {
+  const parents = parentIds(g, childId).map((id) => find(g.nodes, id)).filter(Boolean);
+  if (parents.length >= 2) return g;
+
+  if (parents.length === 1) {
+    let next = addSpouse(g, parents[0].id, newId);
+    next = withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
+    return layoutFamily(next, [parents[0].id, newId]);
+  }
+
+  const child = find(g.nodes, childId);
+  const y = child.position.y - GEN_GAP;
+  let next = withNode(g, personNode(newId, child.position.x, y, { name: 'Nuevo padre', gender: 'M' }));
+  const sp = uid();
+  next = addSpouse(next, newId, sp);
+  next = withLink(next, mkLink('filiacion', newId, childId, 'biologico'));
+  next = withLink(next, mkLink('filiacion', sp, childId, 'biologico'));
+  return layoutFamily(next, [newId, sp]);
+}
+
+// Agrega un hijo a los padres indicados. Si solo hay un padre, crea su pareja del sexo opuesto.
+function addChildWithParents(g, parents, newId, name) {
+  let base = g;
+  const pids = [...parents];
+
+  if (pids.length === 1) {
+    const existing = spouseIds(base, pids[0]);
+    if (existing.length) {
+      pids.push(existing[0]);
+    } else {
+      const sp = uid();
+      base = addSpouse(base, pids[0], sp);
+      pids.push(sp);
+    }
+  }
+
+  let next = withNode(base, personNode(newId, 0, 0, { name }));
+  for (const pid of pids) next = withLink(next, mkLink('filiacion', pid, newId, 'biologico'));
+  return layoutFamily(next, pids);
+}
+
+// + Hijo/a
+function addChild(g, parentId, newId) {
+  return addChildWithParents(g, [parentId], newId, 'Nuevo hijo/a');
+}
+
+// + Hermano/a: mismos padres, centrado con los demás hermanos
 function addSibling(g, personId, newId) {
   let base = g;
   let parents = parentIds(g, personId);
   if (parents.length === 0) {
     const pid = uid();
     base = addParent(g, personId, pid);
-    parents = [pid];
+    parents = parentIds(base, personId);
   }
-  const node = find(base.nodes, personId);
-  const x = freeXDir(base.nodes, node.position.x + SIB_GAP, node.position.y, 1);
-  let next = withNode(base, personNode(newId, x, node.position.y, { name: 'Nuevo hermano/a' }));
-  for (const pid of parents) next = withLink(next, mkLink('filiacion', pid, newId, 'biologico'));
-  return next;
+  return addChildWithParents(base, parents, newId, 'Nuevo hermano/a');
 }
 
 const ACTIONS = { padre: addParent, hijo: addChild, pareja: addSpouse, hermano: addSibling };
