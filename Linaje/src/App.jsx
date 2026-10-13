@@ -133,6 +133,18 @@ function addSpouse(g, personId, newId) {
   return withLink(next, mkLink('pareja', personId, newId, 'matrimonio'));
 }
 
+// + Familia: crea una pareja nueva (hombre a la izquierda, mujer a la derecha)
+function addFamily(g) {
+  const y = 150;
+  const x = freeXDir(g.nodes, 300, y, 1);
+  const manId = uid();
+  const womanId = uid();
+  let next = withNode(g, personNode(manId, x, y, { name: 'Nuevo padre', gender: 'M' }));
+  next = withNode(next, personNode(womanId, x + PAIR_GAP, y, { name: 'Nueva madre', gender: 'F' }));
+  next = withLink(next, mkLink('pareja', manId, womanId, 'matrimonio'));
+  return { graph: next, selectedId: manId };
+}
+
 function addParent(g, childId, newId) {
   const parents = parentIds(g, childId).map((id) => find(g.nodes, id)).filter(Boolean);
   if (parents.length >= 2) return g;
@@ -982,7 +994,7 @@ function flowNodes(g) {
 export default function App() {
   const [graph, setGraph] = useState(loadInitial);
   const [selectedId, setSelectedId] = useState(null);
-  const [marking, setMarking] = useState(null);     // id del hogar en modo de marcado
+  const [marking, setMarking] = useState(null);
   const [showLegend, setShowLegend] = useState(true);
   const fileRef = useRef(null);
 
@@ -1091,6 +1103,18 @@ export default function App() {
     const id = uid();
     setGraph((g) => withNode(g, personNode(id, freeXDir(g.nodes, 300, 150, 1), 150, { name: 'Nueva persona' })));
     setSelectedId(id);
+  }
+
+  // + Familia: crea una pareja y la deja seleccionada para agregar hijos
+  function addFamilyUnit() {
+    let selectedNew = null;
+    setGraph((g) => {
+      const { graph: next, selectedId: sid } = addFamily(g);
+      selectedNew = sid;
+      return relayoutAll(next);
+    });
+    // selectedNew se fija dentro del mismo ciclo de actualización
+    setTimeout(() => setSelectedId(selectedNew), 0);
   }
 
   function addHousehold() {
@@ -1233,7 +1257,8 @@ export default function App() {
         <header className="topbar">
           <h1>Linaje</h1>
           <div className="toolbar">
-            <button className="primary" onClick={addFree}>+ Persona</button>
+            <button className="primary" onClick={addFamilyUnit}>+ Familia</button>
+            <button onClick={addFree}>+ Persona</button>
             <button onClick={addHousehold}>+ Hogar</button>
             {selectedHousehold && !marking && (
               <button onClick={startMarking}>Marcar miembros</button>
