@@ -11,13 +11,13 @@ import { PAREJA, FILIACION, EMOCION, GROUPS, ALL, LEGACY } from './relations.js'
 const STORAGE_KEY = 'linaje-genograma-v6';
 const NODE = 120;
 const HALF = 60;
-const PAIR_DROP = 30;
-const GEN_GAP = 230;
-const PAIR_GAP = 190;
-const SIB_GAP = 170;
+const PAIR_DROP = 30;   // bajada desde la base de cada persona hasta la línea de los padres
+const GEN_GAP = 230;    // distancia vertical entre generaciones
+const PAIR_GAP = 190;   // distancia horizontal de centro a centro en pareja
+const SIB_GAP = 170;    // distancia horizontal de centro a centro entre hijos
 const LINE = { color: '#000000', width: 2 };
-const HALO = 90;   // separación entre los miembros y el contorno del hogar
-const PAD = 40;    // margen de la capa de relleno alrededor de la forma
+const HALO = 90;        // separación entre los miembros y el contorno del hogar
+const PAD = 40;         // margen de la capa de relleno alrededor de la forma
 
 const HOUSEHOLD_COLORS = {
   azul: { box: 'rgba(37, 99, 235, 0.12)', border: '#1d4ed8' },
@@ -25,6 +25,19 @@ const HOUSEHOLD_COLORS = {
   ambar: { box: 'rgba(245, 158, 11, 0.16)', border: '#b45309' },
   gris: { box: 'rgba(107, 114, 128, 0.12)', border: '#374151' },
 };
+
+// Vínculos que se pueden elegir en el formulario de preguntas
+const REL_OPTIONS = [
+  { value: 'padre', label: 'Padre', gender: 'M' },
+  { value: 'madre', label: 'Madre', gender: 'F' },
+  { value: 'pareja', label: 'Pareja', gender: null },
+  { value: 'hijo', label: 'Hijo', gender: 'M' },
+  { value: 'hija', label: 'Hija', gender: 'F' },
+  { value: 'hermano', label: 'Hermano', gender: 'M' },
+  { value: 'hermana', label: 'Hermana', gender: 'F' },
+];
+const REL_GENDER = Object.fromEntries(REL_OPTIONS.map((o) => [o.value, o.gender]));
+const REL_LABEL = Object.fromEntries(REL_OPTIONS.map((o) => [o.value, o.label]));
 
 const Ctx = createContext({ act: () => {}, marks: {}, editPoints: () => {} });
 
@@ -38,6 +51,7 @@ const find = (list, id) => list.find((n) => n.id === id);
 const byIdMap = (nodes) => Object.fromEntries(nodes.map((n) => [n.id, n]));
 const opposite = (gender) => (gender === 'F' ? 'M' : 'F');
 const pairKey = (a, b) => [a, b].sort().join('|');
+const ageText = (age) => (age ? `${age} años` : '');
 
 /* ---------- Geometría del hogar (formas rectas) ---------- */
 
@@ -275,6 +289,280 @@ function addSibling(g, personId, newId) {
 }
 
 const ACTIONS = { padre: addParent, hijo: addChild, pareja: addSpouse, hermano: addSibling };
+
+/* ---------- Armado automático desde el formulario de preguntas ---------- */
+
+function buildFromAnswers({ person, members }) {
+  const idxGender = person.sexo === 'F' ? 'F' : 'M';
+  const idxName = person.nombre.trim() || 'Persona índice';
+  const idxId = uid();
+  const nodes = [
+    personNode(idxId, 0, 150, {
+      name: idxName,
+      year: ageText(person.edad),
+      gender: idxGender,
+      index: true,
+    }),
+  ];
+  const links = [];
+  const tableIds = [];
+
+  const rows = members.filter((m) => m.vinculo && (m.nombre.trim() || m.edad));
+  const rowName = (r) => r.nombre.trim() || REL_LABEL[r.vinculo] || 'Persona';
+  const pick = (v) => rows.find((r) => r.vinculo === v);
+  const padreRow = pick('padre');
+  const madreRow = pick('madre');
+  const parejaRow = pick('pareja');
+  const hijos = rows.filter((r) => r.vinculo === 'hijo' || r.vinculo === 'hija');
+  const hermanos = rows.filter((r) => r.vinculo === 'hermano' || r.vinculo === 'hermana');
+
+  const addPerson = (name, age, gender, x, y, inTable) => {
+    const id = uid();
+    nodes.push(personNode(id, x, y, { name, year: ageText(age), gender }));
+    if (inTable) tableIds.push(id);
+    return id;
+  };
+
+  // Padre, madre y hermanos. Si falta uno de los padres, se crea un nodo para completar la pareja.
+  const hasParents = Boolean(padreRow || madreRow || hermanos.length);
+  if (hasParents) {
+    const paId = addPerson(
+      padreRow ? rowName(padreRow) : 'Padre',
+      padreRow?.edad,
+      'M',
+      0,
+      -80,
+      Boolean(padreRow)
+    );
+    const maId = addPerson(
+      madreRow ? rowName(madreRow) : 'Madre',
+      madreRow?.edad,
+      'F',
+      PAIR_GAP,
+      -80,
+      Boolean(madreRow)
+    );
+    links.push(mkLink('pareja', paId, maId, 'matrimonio'));
+    links.push(mkLink('filiacion', paId, idxId, 'biologico'));
+    links.push(mkLink('filiacion', maId, idxId, 'biologico'));
+
+    hermanos.forEach((h, i) => {
+      const id = addPerson(rowName(h), h.edad, REL_GENDER[h.vinculo] ?? opposite(idxGender), (i + 1) * SIB_GAP, 150, true);
+      links.push(mkLink('filiacion', paId, id, 'biologico'));
+      links.push(mkLink('filiacion', maId, id, 'biologico'));
+    });
+  }
+
+  // Pareja actual: si se indicó, o si hay hijos y no hay pareja, se crea una del sexo opuesto
+  let partnerId = null;
+  if (parejaRow || hijos.length) {
+    partnerId = addPerson(
+      parejaRow ? rowName(parejaRow) : 'Pareja',
+      parejaRow?.edad,
+      opposite(idxGender),
+      PAIR_GAP,
+      150,
+      Boolean(parejaRow)
+    );
+    links.push(mkLink('pareja', idxId, partnerId, 'matrimonio'));
+  }
+
+  // Hijos: bajan de la persona y de su pareja
+  const kidParents = partnerId ? [idxId, partnerId] : [idxId];
+  hijos.forEach((h, i) => {
+    const id = addPerson(rowName(h), h.edad, REL_GENDER[h.vinculo] ?? opposite(idxGender), i * SIB_GAP, 350, true);
+    kidParents.forEach((p) => links.push(mkLink('filiacion', p, id, 'biologico')));
+  });
+
+  // Primer acomodo de familias
+  let g = relayoutAll({ nodes, links, households: [] });
+
+  // La pareja se coloca junto a la persona principal y luego se recentran los hijos
+  if (partnerId) {
+    const idx = find(g.nodes, idxId);
+    const others = g.nodes.filter((n) => n.id !== partnerId);
+    const x = freeXDir(others, idx.position.x + PAIR_GAP, idx.position.y, 1);
+    g = {
+      ...g,
+      nodes: g.nodes.map((n) => (n.id === partnerId ? { ...n, position: { x, y: idx.position.y } } : n)),
+    };
+    g = relayoutAll(g);
+  }
+
+  // Hogar: la persona principal y quienes aparecen en la tabla
+  const household = {
+    id: uid(),
+    label: `Hogar de ${idxName}`,
+    color: 'azul',
+    members: [idxId, ...tableIds],
+    points: rectPoints(0, 0, 10, 10),
+  };
+  household.points = fitPoints(household, g.nodes);
+
+  return { ...g, households: [household] };
+}
+
+/* ---------- Formulario de preguntas ---------- */
+
+const emptyRow = () => ({ key: uid(), nombre: '', edad: '', vinculo: 'hijo' });
+
+function QuestionsModal({ onClose, onBuild }) {
+  const [person, setPerson] = useState({ nombre: '', sexo: 'M', edad: '' });
+  const [members, setMembers] = useState([]);
+
+  const field = {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: 8,
+    border: '1px solid #d6d3d1',
+    borderRadius: 6,
+    font: 'inherit',
+    fontSize: 14,
+    background: '#fff',
+  };
+  const label = { fontSize: 12, color: '#57534e', display: 'flex', flexDirection: 'column', gap: 4 };
+  const btn = {
+    font: 'inherit',
+    fontSize: 13,
+    padding: '8px 14px',
+    borderRadius: 6,
+    border: '1px solid #d6d3d1',
+    background: '#fff',
+    cursor: 'pointer',
+  };
+
+  const setRow = (key, patch) =>
+    setMembers((ms) => ms.map((m) => (m.key === key ? { ...m, ...patch } : m)));
+  const removeRow = (key) => setMembers((ms) => ms.filter((m) => m.key !== key));
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 50,
+        padding: 12,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: '#ffffff',
+          borderRadius: 12,
+          padding: 20,
+          width: 'min(580px, 100%)',
+          maxHeight: '90vh',
+          overflowY: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 14,
+          boxShadow: '0 10px 30px rgba(0,0,0,0.2)',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <strong style={{ fontSize: 17 }}>Preguntas para armar el genograma</strong>
+          <button style={{ ...btn, border: 'none', background: 'transparent' }} onClick={onClose} aria-label="Cerrar">✕</button>
+        </div>
+
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 8 }}>
+            Persona principal
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 10 }}>
+            <label style={label}>
+              Nombre
+              <input
+                style={field}
+                value={person.nombre}
+                onChange={(e) => setPerson({ ...person, nombre: e.target.value })}
+              />
+            </label>
+            <label style={label}>
+              Sexo
+              <select style={field} value={person.sexo} onChange={(e) => setPerson({ ...person, sexo: e.target.value })}>
+                <option value="M">Hombre</option>
+                <option value="F">Mujer</option>
+              </select>
+            </label>
+            <label style={label}>
+              Edad
+              <input
+                style={field}
+                type="number"
+                min="0"
+                value={person.edad}
+                onChange={(e) => setPerson({ ...person, edad: e.target.value })}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>Personas con las que vive</div>
+          <div style={{ fontSize: 12, color: '#78716c', margin: '4px 0 10px' }}>
+            Agrega a su familia y a quienes viven con ella. Con esto se arma el genograma y el hogar.
+          </div>
+
+          {members.map((m) => (
+            <div
+              key={m.key}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1.6fr 0.7fr 1.1fr auto',
+                gap: 8,
+                alignItems: 'end',
+                marginBottom: 8,
+              }}
+            >
+              <label style={label}>
+                Nombre
+                <input style={field} value={m.nombre} onChange={(e) => setRow(m.key, { nombre: e.target.value })} />
+              </label>
+              <label style={label}>
+                Edad
+                <input
+                  style={field}
+                  type="number"
+                  min="0"
+                  value={m.edad}
+                  onChange={(e) => setRow(m.key, { edad: e.target.value })}
+                />
+              </label>
+              <label style={label}>
+                Vínculo
+                <select style={field} value={m.vinculo} onChange={(e) => setRow(m.key, { vinculo: e.target.value })}>
+                  {REL_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </label>
+              <button style={btn} onClick={() => removeRow(m.key)} aria-label="Quitar persona">✕</button>
+            </div>
+          ))}
+
+          <button style={btn} onClick={() => setMembers((ms) => [...ms, emptyRow()])}>
+            + Agregar persona
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+          <button style={btn} onClick={onClose}>Cancelar</button>
+          <button
+            style={{ ...btn, color: '#fff', background: '#2563eb', borderColor: '#2563eb' }}
+            onClick={() => onBuild({ person, members })}
+          >
+            Armar genograma
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ---------- Persistencia ---------- */
 
@@ -1234,6 +1522,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [marking, setMarking] = useState(null);
   const [showLegend, setShowLegend] = useState(true);
+  const [showQuestions, setShowQuestions] = useState(false);
   const fileRef = useRef(null);
 
   useEffect(() => {
@@ -1351,6 +1640,15 @@ export default function App() {
       ],
     }));
     setSelectedId(id);
+  }
+
+  // Reemplaza el genograma actual por el armado con las respuestas
+  function applyAnswers(answers) {
+    if (graph.nodes.length && !confirm('¿Armar un genograma nuevo? Reemplaza el actual.')) return;
+    setGraph(buildFromAnswers(answers));
+    setSelectedId(null);
+    setMarking(null);
+    setShowQuestions(false);
   }
 
   function updateNode(id, patch) {
@@ -1502,7 +1800,8 @@ export default function App() {
         <header className="topbar">
           <h1>Linaje</h1>
           <div className="toolbar">
-            <button className="primary" onClick={addFamilyUnit}>+ Familia</button>
+            <button className="primary" onClick={() => setShowQuestions(true)}>❓ Preguntas</button>
+            <button onClick={addFamilyUnit}>+ Familia</button>
             <button onClick={addFree}>+ Persona</button>
             <button onClick={addHousehold}>+ Hogar</button>
             {selectedHousehold && !marking && (
@@ -1588,6 +1887,10 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {showQuestions && (
+        <QuestionsModal onClose={() => setShowQuestions(false)} onBuild={applyAnswers} />
+      )}
     </Ctx.Provider>
   );
 }
