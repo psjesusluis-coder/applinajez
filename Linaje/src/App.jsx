@@ -17,15 +17,16 @@ const PAIR_GAP = 190;
 const SIB_GAP = 170;
 const LINE = { color: '#000000', width: 2 };
 const HALO = 90;   // separación entre los miembros y el contorno del hogar
+const PAD = 40;    // margen de la capa de relleno alrededor de la forma
 
 const HOUSEHOLD_COLORS = {
-  azul: { box: 'rgba(37, 99, 235, 0.12)', shade: 'rgba(37, 99, 235, 0.35)', border: '#1d4ed8' },
-  verde: { box: 'rgba(16, 185, 129, 0.14)', shade: 'rgba(16, 185, 129, 0.40)', border: '#047857' },
-  ambar: { box: 'rgba(245, 158, 11, 0.16)', shade: 'rgba(245, 158, 11, 0.40)', border: '#b45309' },
-  gris: { box: 'rgba(107, 114, 128, 0.12)', shade: 'rgba(107, 114, 128, 0.40)', border: '#374151' },
+  azul: { box: 'rgba(37, 99, 235, 0.12)', border: '#1d4ed8' },
+  verde: { box: 'rgba(16, 185, 129, 0.14)', border: '#047857' },
+  ambar: { box: 'rgba(245, 158, 11, 0.16)', border: '#b45309' },
+  gris: { box: 'rgba(107, 114, 128, 0.12)', border: '#374151' },
 };
 
-const Ctx = createContext({ act: () => {}, shade: {}, editPoints: () => {} });
+const Ctx = createContext({ act: () => {}, marks: {}, editPoints: () => {} });
 
 const snap = (v) => Math.round(v);
 
@@ -38,7 +39,7 @@ const byIdMap = (nodes) => Object.fromEntries(nodes.map((n) => [n.id, n]));
 const opposite = (gender) => (gender === 'F' ? 'M' : 'F');
 const pairKey = (a, b) => [a, b].sort().join('|');
 
-/* ---------- Geometría del hogar ---------- */
+/* ---------- Geometría del hogar (formas rectas) ---------- */
 
 const rectPoints = (x, y, w, h) => [
   { x, y },
@@ -47,23 +48,10 @@ const rectPoints = (x, y, w, h) => [
   { x, y: y + h },
 ];
 
-// Curva suave que pasa por todos los puntos (Catmull-Rom cerrada)
-function smoothPath(pts) {
-  const n = pts.length;
-  if (n < 3) return '';
-  let d = `M ${pts[0].x} ${pts[0].y}`;
-  for (let i = 0; i < n; i++) {
-    const p0 = pts[(i - 1 + n) % n];
-    const p1 = pts[i];
-    const p2 = pts[(i + 1) % n];
-    const p3 = pts[(i + 2) % n];
-    const c1x = p1.x + (p2.x - p0.x) / 6;
-    const c1y = p1.y + (p2.y - p0.y) / 6;
-    const c2x = p2.x - (p3.x - p1.x) / 6;
-    const c2y = p2.y - (p3.y - p1.y) / 6;
-    d += ` C ${c1x} ${c1y} ${c2x} ${c2y} ${p2.x} ${p2.y}`;
-  }
-  return `${d} Z`;
+// Polígono recto: solo líneas rectas entre esquinas
+function polyPath(pts) {
+  if (pts.length < 3) return '';
+  return `M ${pts.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`;
 }
 
 function centroid(pts) {
@@ -73,11 +61,10 @@ function centroid(pts) {
   };
 }
 
-function topLeft(pts) {
-  return {
-    minX: Math.min(...pts.map((p) => p.x)),
-    minY: Math.min(...pts.map((p) => p.y)),
-  };
+function bounds(pts) {
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  return { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) };
 }
 
 // Casco convexo (cadena monótona)
@@ -101,7 +88,7 @@ function convexHull(points) {
   return lower.concat(upper);
 }
 
-// Contorno que envuelve a los miembros: círculos alrededor de cada centro y su casco
+// Contorno recto que envuelve a los miembros
 function fitPoints(household, nodes) {
   const members = household.members.map((id) => find(nodes, id)).filter(Boolean);
   if (!members.length) return household.points;
@@ -226,7 +213,6 @@ function addSpouse(g, personId, newId) {
   return withLink(next, mkLink('pareja', personId, newId, 'matrimonio'));
 }
 
-// + Familia: un hombre y una mujer unidos por matrimonio
 function addFamily(g, manId, womanId) {
   const x = freeXDir(g.nodes, 300, 150, 1);
   let next = withNode(g, personNode(manId, x, 150, { name: 'Nuevo padre', gender: 'M' }));
@@ -398,8 +384,8 @@ function loadInitial() {
 /* ---------- Nodo de persona ---------- */
 
 function PersonNode({ id, data, selected }) {
-  const { act, shade } = useContext(Ctx);
-  const s = shade[id];
+  const { act, marks } = useContext(Ctx);
+  const mark = marks[id];
   const cls = [
     'person',
     data.gender === 'F' ? 'person--f' : 'person--m',
@@ -415,7 +401,22 @@ function PersonNode({ id, data, selected }) {
   };
 
   return (
-    <div className={cls} style={s ? { background: s.shade, borderColor: s.border } : undefined}>
+    <div className={cls}>
+      {mark && (
+        <span
+          title="Miembro de un hogar"
+          style={{
+            position: 'absolute',
+            top: 6,
+            right: 6,
+            width: 9,
+            height: 9,
+            borderRadius: '50%',
+            background: mark,
+            border: '1px solid #ffffff',
+          }}
+        />
+      )}
       {data.deceased && (
         <svg className="dead-line" viewBox="0 0 120 120" aria-hidden="true">
           <line x1="0" y1="120" x2="120" y2="0" stroke="#1f2937" strokeWidth="2" />
@@ -436,11 +437,30 @@ function PersonNode({ id, data, selected }) {
   );
 }
 
-const nodeTypes = { person: PersonNode };
+// Relleno del hogar: nodo de fondo, detrás de las personas, sin interacción
+function HouseholdFill({ data }) {
+  const c = HOUSEHOLD_COLORS[data.color] ?? HOUSEHOLD_COLORS.azul;
+  return (
+    <svg width={data.w} height={data.h} style={{ overflow: 'visible', pointerEvents: 'none' }}>
+      <path
+        d={polyPath(data.points)}
+        fill={c.box}
+        stroke={c.border}
+        strokeWidth={data.selected ? 2.5 : 1.5}
+        strokeDasharray={data.selected ? undefined : '6 4'}
+        strokeLinejoin="miter"
+      />
+      <text x={8} y={18} fontSize={12} fontWeight={600} fill="#374151">
+        {data.label}
+      </text>
+    </svg>
+  );
+}
 
-/* ---------- Asas del hogar: se arrastran con el dedo ---------- */
+const nodeTypes = { person: PersonNode, household: HouseholdFill };
 
-// Adjunta un listener nativo para que el arrastre no mueva el lienzo por debajo.
+/* ---------- Controles del hogar: encima, se arrastran con el dedo ---------- */
+
 function useNativeDown(ref, handler) {
   useEffect(() => {
     const el = ref.current;
@@ -468,7 +488,7 @@ function Grip({ kind, x, y, onDown }) {
         y={y - 10}
         width={20}
         height={20}
-        rx={4}
+        rx={3}
         fill="#ffffff"
         stroke="#374151"
         strokeWidth={2}
@@ -504,15 +524,10 @@ function Grip({ kind, x, y, onDown }) {
   );
 }
 
-/* ---------- Hogares: forma libre ---------- */
-
-// Dos capas: el relleno va detrás de las personas (hh-back);
-// los controles van encima para poder tocarlos (hh-front).
-function HouseholdLayer({ households, selectedId, onSelect, marking }) {
+function HouseholdControls({ households, selectedId, onSelect, marking }) {
   const { screenToFlowPosition } = useReactFlow();
   const { editPoints } = useContext(Ctx);
 
-  // mode: { type: 'vertex', idx } | { type: 'mid', idx } | { type: 'move' }
   function beginDrag(e, hid, mode) {
     const h = find(households, hid);
     if (!h) return;
@@ -550,90 +565,58 @@ function HouseholdLayer({ households, selectedId, onSelect, marking }) {
   }
 
   return (
-    <>
-      <svg className="hh-back">
-        {households.map((h) => {
-          const d = smoothPath(h.points);
-          const c = HOUSEHOLD_COLORS[h.color] ?? HOUSEHOLD_COLORS.azul;
-          const sel = h.id === selectedId;
-          const tl = topLeft(h.points);
-          return (
-            <g key={h.id}>
-              <path
-                d={d}
-                fill={c.box}
-                stroke={c.border}
-                strokeWidth={sel ? 2.5 : 1.5}
-                strokeDasharray={sel ? undefined : '6 4'}
-              />
-              <text
-                x={tl.minX + 12}
-                y={tl.minY + 20}
-                fontSize={12}
-                fontWeight={600}
-                fill="#374151"
-              >
-                {h.label}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-
-      <svg className="hh-front">
-        {households.map((h) => {
-          const d = smoothPath(h.points);
-          const sel = h.id === selectedId;
-          const cen = centroid(h.points);
-          return (
-            <g key={h.id}>
-              <path
-                d={d}
-                fill="none"
-                stroke="transparent"
-                strokeWidth={24}
-                style={{ pointerEvents: marking ? 'none' : 'stroke', cursor: 'pointer' }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (!marking) onSelect(h.id);
-                }}
-              />
-              {sel && !marking && (
-                <>
-                  {h.points.map((p, i) => {
-                    const q = h.points[(i + 1) % h.points.length];
-                    return (
-                      <Grip
-                        key={`m${i}`}
-                        kind="mid"
-                        x={(p.x + q.x) / 2}
-                        y={(p.y + q.y) / 2}
-                        onDown={(e) => beginDrag(e, h.id, { type: 'mid', idx: i })}
-                      />
-                    );
-                  })}
-                  {h.points.map((p, i) => (
+    <svg className="hh-front">
+      {households.map((h) => {
+        const sel = h.id === selectedId;
+        const cen = centroid(h.points);
+        return (
+          <g key={h.id}>
+            <path
+              d={polyPath(h.points)}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={24}
+              style={{ pointerEvents: marking ? 'none' : 'stroke', cursor: 'pointer' }}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!marking) onSelect(h.id);
+              }}
+            />
+            {sel && !marking && (
+              <>
+                {h.points.map((p, i) => {
+                  const q = h.points[(i + 1) % h.points.length];
+                  return (
                     <Grip
-                      key={`v${i}`}
-                      kind="square"
-                      x={p.x}
-                      y={p.y}
-                      onDown={(e) => beginDrag(e, h.id, { type: 'vertex', idx: i })}
+                      key={`m${i}`}
+                      kind="mid"
+                      x={(p.x + q.x) / 2}
+                      y={(p.y + q.y) / 2}
+                      onDown={(e) => beginDrag(e, h.id, { type: 'mid', idx: i })}
                     />
-                  ))}
+                  );
+                })}
+                {h.points.map((p, i) => (
                   <Grip
-                    kind="move"
-                    x={cen.x}
-                    y={cen.y}
-                    onDown={(e) => beginDrag(e, h.id, { type: 'move' })}
+                    key={`v${i}`}
+                    kind="square"
+                    x={p.x}
+                    y={p.y}
+                    onDown={(e) => beginDrag(e, h.id, { type: 'vertex', idx: i })}
                   />
-                </>
-              )}
-            </g>
-          );
-        })}
-      </svg>
-    </>
+                ))}
+                <Grip
+                  kind="move"
+                  x={cen.x}
+                  y={cen.y}
+                  onDown={(e) => beginDrag(e, h.id, { type: 'move' })}
+                />
+              </>
+            )}
+          </g>
+        );
+      })}
+    </svg>
   );
 }
 
@@ -1138,8 +1121,8 @@ function HouseholdEditor({
       </label>
 
       <p className="hint">
-        Mueve las esquinas cuadradas para moldear la forma. Los puntos azules entre esquinas agregan una esquina nueva.
-        El punto oscuro mueve toda la forma.
+        Mueve los cuadrados de las esquinas para moldear la forma. Los puntos azules entre esquinas agregan una esquina nueva.
+        El punto oscuro mueve toda la forma sin mover a sus miembros.
       </p>
 
       <button className="primary" onClick={onFit}>Ajustar al contorno de miembros</button>
@@ -1215,6 +1198,37 @@ function Legend({ graph, onClose }) {
 
 /* ---------- App ---------- */
 
+// Nodos de fondo (hogares) y personas. Los hogares no son interactivos.
+function flowNodes(g, selectedId) {
+  const fills = g.households.map((h) => {
+    const bb = bounds(h.points);
+    const ox = bb.minX - PAD;
+    const oy = bb.minY - PAD;
+    const w = bb.maxX - bb.minX + PAD * 2;
+    const hgt = bb.maxY - bb.minY + PAD * 2;
+    return {
+      id: `hh-${h.id}`,
+      type: 'household',
+      position: { x: ox, y: oy },
+      draggable: false,
+      selectable: false,
+      connectable: false,
+      focusable: false,
+      zIndex: -1,
+      style: { width: w, height: hgt, background: 'none', border: 'none', padding: 0, pointerEvents: 'none' },
+      data: {
+        points: h.points.map((p) => ({ x: p.x - ox, y: p.y - oy })),
+        label: h.label,
+        color: h.color,
+        selected: h.id === selectedId,
+        w,
+        h: hgt,
+      },
+    };
+  });
+  return [...fills, ...g.nodes];
+}
+
 export default function App() {
   const [graph, setGraph] = useState(loadInitial);
   const [selectedId, setSelectedId] = useState(null);
@@ -1230,12 +1244,13 @@ export default function App() {
     }
   }, [graph]);
 
-  const shade = useMemo(() => {
+  // Color del punto que indica pertenencia a un hogar (no tiñe a la persona)
+  const marks = useMemo(() => {
     const out = {};
     for (const h of graph.households) {
       const c = HOUSEHOLD_COLORS[h.color] ?? HOUSEHOLD_COLORS.azul;
       for (const pid of h.members) {
-        if (!out[pid]) out[pid] = { shade: c.shade, border: c.border };
+        if (!out[pid]) out[pid] = c.border;
       }
     }
     return out;
@@ -1266,7 +1281,7 @@ export default function App() {
     const newId = uid();
     setGraph((g) => relayoutAll(ACTIONS[type](g, id, newId)));
   }, []);
-  const ctx = useMemo(() => ({ act, shade, editPoints }), [act, shade, editPoints]);
+  const ctx = useMemo(() => ({ act, marks, editPoints }), [act, marks, editPoints]);
 
   const selected = find(graph.nodes, selectedId);
   const selectedHousehold = find(graph.households, selectedId);
@@ -1505,7 +1520,7 @@ export default function App() {
         {markingHousehold && (
           <div className="marking-bar">
             <span>
-              Marcando "{markingHousehold.label}": toca las personas que viven aquí para sombrearlas.
+              Marcando "{markingHousehold.label}": toca las personas que viven aquí para marcarlas.
             </span>
             <button className="primary" onClick={stopMarking}>Listo</button>
           </div>
@@ -1514,7 +1529,7 @@ export default function App() {
         <div className="body">
           <div className="canvas">
             <ReactFlow
-              nodes={graph.nodes}
+              nodes={flowNodes(graph, selectedId)}
               edges={[]}
               onNodesChange={onNodesChange}
               onNodeDragStop={onNodeDragStop}
@@ -1529,7 +1544,7 @@ export default function App() {
               <Controls />
               <MiniMap pannable zoomable />
               <ViewportPortal>
-                <HouseholdLayer
+                <HouseholdControls
                   households={graph.households}
                   selectedId={selectedId}
                   onSelect={selectHousehold}
