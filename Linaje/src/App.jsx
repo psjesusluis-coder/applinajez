@@ -731,45 +731,54 @@ async function composeWithLegend(flowUrl, rows) {
   const by = img.height + pad;
   frame(bx, by, boxW, symH, 'Símbolos del genograma');
 
+  // Mismo diseño que la sección Símbolos de la leyenda (236 x 128 px, centrado en el recuadro)
   const X = (v) => bx + v * s;
   const Y = (v) => by + v * s;
+  const SX = (x) => X(72 + x);
+  const SY = (y) => Y(50 + y);
 
-  ctx.strokeStyle = '#000000';
+  ctx.strokeStyle = '#111111';
+  ctx.fillStyle = '#ffffff';
   ctx.lineWidth = 2 * s;
 
-  ctx.strokeRect(X(70), Y(70), 30 * s, 30 * s);
+  // Cuadrado (hombre) y círculo (mujer) de la pareja
+  ctx.strokeRect(SX(42), SY(10), 24 * s, 24 * s);
   ctx.beginPath();
-  ctx.arc(X(290), Y(85), 15 * s, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(X(85), Y(100));
-  ctx.lineTo(X(85), Y(125));
-  ctx.lineTo(X(290), Y(125));
-  ctx.lineTo(X(290), Y(100));
+  ctx.arc(SX(200), SY(22), 12 * s, 0, Math.PI * 2);
   ctx.stroke();
 
+  // Línea de unión: baja del cuadrado, cruza y sube al círculo
   ctx.beginPath();
-  ctx.moveTo(X(187), Y(125));
-  ctx.lineTo(X(187), Y(145));
-  ctx.moveTo(X(150), Y(145));
-  ctx.lineTo(X(230), Y(145));
-  ctx.moveTo(X(150), Y(145));
-  ctx.lineTo(X(150), Y(172));
-  ctx.moveTo(X(230), Y(145));
-  ctx.lineTo(X(230), Y(172));
+  ctx.moveTo(SX(54), SY(34));
+  ctx.lineTo(SX(54), SY(50));
+  ctx.lineTo(SX(200), SY(50));
+  ctx.lineTo(SX(200), SY(34));
   ctx.stroke();
 
-  ctx.strokeRect(X(142), Y(172), 16 * s, 16 * s);
+  // Bajada central, barra de hijos y bajadas a cada hijo
   ctx.beginPath();
-  ctx.arc(X(230), Y(180), 8 * s, 0, Math.PI * 2);
+  ctx.moveTo(SX(127), SY(50));
+  ctx.lineTo(SX(127), SY(70));
+  ctx.moveTo(SX(90), SY(70));
+  ctx.lineTo(SX(164), SY(70));
+  ctx.moveTo(SX(90), SY(70));
+  ctx.lineTo(SX(90), SY(88));
+  ctx.moveTo(SX(164), SY(70));
+  ctx.lineTo(SX(164), SY(88));
+  ctx.stroke();
+
+  // Hijo (cuadrado) e hija (círculo)
+  ctx.strokeRect(SX(82), SY(88), 16 * s, 16 * s);
+  ctx.beginPath();
+  ctx.arc(SX(164), SY(96), 8 * s, 0, Math.PI * 2);
   ctx.stroke();
 
   ctx.fillStyle = '#374151';
-  ctx.font = font(11);
+  ctx.font = font(10);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
-  ctx.fillText('Masculino', X(150), Y(196));
-  ctx.fillText('Femenino', X(230), Y(196));
+  ctx.fillText('Masculino', SX(90), SY(120));
+  ctx.fillText('Femenino', SX(164), SY(120));
   ctx.textAlign = 'left';
 
   const ry = by + symH + pad;
@@ -793,7 +802,6 @@ async function composeWithLegend(flowUrl, rows) {
 
     ctx.lineWidth = 1.5 * s;
 
-    // Casa de convivencia
     if (d.house) {
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
@@ -807,7 +815,6 @@ async function composeWithLegend(flowUrl, rows) {
       ctx.stroke();
     }
 
-    // Barras de separación
     const slashCount = d.slashes ?? (d.deco === 'slash' ? 1 : d.deco === 'slash2' ? 2 : 0);
     const slashBase = d.house ? xm + 12 * s : xm;
     for (let k = 0; k < slashCount; k++) {
@@ -818,7 +825,6 @@ async function composeWithLegend(flowUrl, rows) {
       ctx.stroke();
     }
 
-    // Viudez (X)
     if (d.deco === 'cross') {
       ctx.beginPath();
       ctx.moveTo(xm - 6 * s, ly - 6 * s);
@@ -1161,14 +1167,12 @@ function Segment({ def, x1, y1, x2, y2 }) {
       <path key={key()} d={line(P(t - 4, -6), P(t + 4, 6))} fill="none" stroke={def.color} strokeWidth={1.5} />
     );
 
-  // Barras de separación (relaciones de pareja)
   const slashCount = def.slashes ?? 0;
   const slashBase = def.house ? m + 12 : m;
   for (let i = 0; i < slashCount; i++) {
     slashAt(slashBase + (i - (slashCount - 1) / 2) * 6);
   }
 
-  // Casa de convivencia
   if (def.house) {
     const [cx, cy] = P(m);
     parts.push(
@@ -1360,7 +1364,6 @@ function Drawings({ graph }) {
   const out = [];
   const parentLine = {};
 
-  // 1. Pareja: las bajadas son siempre negras y sólidas; la barra lleva el tipo de relación
   graph.links.forEach((l) => {
     if (l.type !== 'pareja') return;
     const A = byId[l.a];
@@ -1383,7 +1386,6 @@ function Drawings({ graph }) {
     parentLine[pairKey(l.a, l.b)] = { xL: L.cx, xR: R.cx, y: yU, def };
   });
 
-  // 2. Relaciones emocionales: diagonal de individuo a individuo
   graph.links.forEach((l) => {
     if (l.type !== 'emocion') return;
     const A = byId[l.a];
@@ -1394,7 +1396,6 @@ function Drawings({ graph }) {
     out.push(<Segment key={`e${l.id}`} def={EMOCION[l.kind] ?? EMOCION.indiferente} {...s} />);
   });
 
-  // 3. Hijos: solo verticales que bajan desde la línea de los padres
   const fam = {};
   for (const l of graph.links) {
     if (l.type !== 'filiacion') continue;
@@ -1432,7 +1433,6 @@ function Drawings({ graph }) {
     const dashed = [];
 
     if (f.type === 'pair') {
-      // Extensión de la línea de los padres si algún hijo queda fuera de su largo
       const cxs = kids.map(([, c]) => c.cx);
       const xmin = Math.min(...cxs);
       const xmax = Math.max(...cxs);
@@ -1703,6 +1703,31 @@ function HouseholdEditor({
   );
 }
 
+// Símbolos básicos, con el mismo diseño de la guía: pareja, hijos y etiquetas Masculino/Femenino
+function SymbolsLegend() {
+  const stroke = '#111111';
+  return (
+    <div>
+      <div className="legend-title">Símbolos</div>
+      <svg width="236" height="128" viewBox="0 0 236 128" style={{ display: 'block', margin: '4px 0 8px' }}>
+        <rect x="42" y="10" width="24" height="24" fill="#ffffff" stroke={stroke} strokeWidth="2" />
+        <circle cx="200" cy="22" r="12" fill="#ffffff" stroke={stroke} strokeWidth="2" />
+        <path d="M 54 34 L 54 50 L 200 50 L 200 34" fill="none" stroke={stroke} strokeWidth="2" />
+        <path
+          d="M 127 50 L 127 70 M 90 70 L 164 70 M 90 70 L 90 88 M 164 70 L 164 88"
+          fill="none"
+          stroke={stroke}
+          strokeWidth="2"
+        />
+        <rect x="82" y="88" width="16" height="16" fill="#ffffff" stroke={stroke} strokeWidth="2" />
+        <circle cx="164" cy="96" r="8" fill="#ffffff" stroke={stroke} strokeWidth="2" />
+        <text x="90" y="120" fontSize="10" textAnchor="middle" fill="#374151">Masculino</text>
+        <text x="164" y="120" fontSize="10" textAnchor="middle" fill="#374151">Femenino</text>
+      </svg>
+    </div>
+  );
+}
+
 function Legend({ graph, onClose }) {
   const used = new Set(graph.links.map((l) => l.kind));
   return (
@@ -1711,6 +1736,9 @@ function Legend({ graph, onClose }) {
         <strong>Leyenda</strong>
         <button className="ghost" onClick={onClose} aria-label="Ocultar">✕</button>
       </div>
+
+      <SymbolsLegend />
+
       {graph.links.length === 0 && <p className="hint">Aún no hay relaciones.</p>}
       {GROUPS.map((gr) => {
         const items = Object.entries(gr.defs).filter(([k]) => used.has(k));
