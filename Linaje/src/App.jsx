@@ -2,7 +2,8 @@ import {
   useState, useCallback, useMemo, useRef, useEffect, useContext, createContext,
 } from 'react';
 import {
-  ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ViewportPortal, applyNodeChanges,
+  ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ViewportPortal,
+  applyNodeChanges, NodeResizer,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { PAREJA, FILIACION, EMOCION, GROUPS, ALL, LEGACY } from './relations.js';
@@ -15,7 +16,16 @@ const GEN_GAP = 230;    // distancia vertical entre generaciones
 const PAIR_GAP = 190;   // distancia horizontal de centro a centro en pareja
 const SIB_GAP = 170;    // distancia horizontal de centro a centro entre hijos
 const LINE = { color: '#000000', width: 2 };
-const Ctx = createContext({ act: () => {} });
+
+// Fondo del cuadro del hogar, y sombreado de cada miembro
+const HOUSEHOLD_COLORS = {
+  azul: { box: 'rgba(37, 99, 235, 0.10)', shade: 'rgba(37, 99, 235, 0.35)', border: '#1d4ed8' },
+  verde: { box: 'rgba(16, 185, 129, 0.12)', shade: 'rgba(16, 185, 129, 0.40)', border: '#047857' },
+  ambar: { box: 'rgba(245, 158, 11, 0.14)', shade: 'rgba(245, 158, 11, 0.40)', border: '#b45309' },
+  gris: { box: 'rgba(107, 114, 128, 0.12)', shade: 'rgba(107, 114, 128, 0.40)', border: '#374151' },
+};
+
+const Ctx = createContext({ act: () => {}, resizeHousehold: () => {}, shade: {} });
 
 const snap = (v) => Math.round(v);
 
@@ -205,6 +215,18 @@ const SAMPLE = {
     { id: 'l12', type: 'emocion', a: 'madre', b: 'hija1', kind: 'amor' },
     { id: 'l13', type: 'emocion', a: 'hijo1', b: 'hijo2', kind: 'distante' },
   ],
+  households: [
+    {
+      id: 'hogar1',
+      x: 90,
+      y: 170,
+      width: 620,
+      height: 420,
+      label: 'Hogar Juan y Ana',
+      color: 'azul',
+      members: ['padre', 'madre', 'hijo1', 'hija1', 'hijo2'],
+    },
+  ],
 };
 
 function fromLegacy(edges) {
@@ -232,13 +254,33 @@ function normalize(data) {
   const links = raw
     .filter((l) => types.includes(l.type) && ids.has(l.a) && ids.has(l.b) && ALL[l.kind])
     .map((l) => ({ id: uid(), ...l }));
-  return relayoutAll({ nodes, links });
+  const households = (Array.isArray(data.households) ? data.households : []).map((h) => ({
+    id: String(h.id ?? uid()),
+    x: snap(h.x ?? 0),
+    y: snap(h.y ?? 0),
+    width: snap(h.width ?? 340),
+    height: snap(h.height ?? 260),
+    label: h.label ?? 'Hogar',
+    color: HOUSEHOLD_COLORS[h.color] ? h.color : 'azul',
+    members: (h.members ?? []).map(String).filter((id) => ids.has(id)),
+  }));
+  return relayoutAll({ nodes, links, households });
 }
 
 function serialize(g) {
   return {
     nodes: g.nodes.map((n) => ({ id: n.id, position: n.position, data: n.data })),
     links: g.links.map((l) => ({ id: l.id, type: l.type, a: l.a, b: l.b, kind: l.kind })),
+    households: g.households.map((h) => ({
+      id: h.id,
+      x: h.x,
+      y: h.y,
+      width: h.width,
+      height: h.height,
+      label: h.label,
+      color: h.color,
+      members: h.members,
+    })),
   };
 }
 
@@ -252,15 +294,17 @@ function loadInitial() {
   return normalize(SAMPLE);
 }
 
-/* ---------- Nodo ---------- */
+/* ---------- Nodos ---------- */
 
 function PersonNode({ id, data, selected }) {
-  const { act } = useContext(Ctx);
+  const { act, shade } = useContext(Ctx);
+  const s = shade[id];
   const cls = [
     'person',
     data.gender === 'F' ? 'person--f' : 'person--m',
     selected && 'is-selected',
     data.index && 'is-index',
+    s && 'is-member',
   ]
     .filter(Boolean)
     .join(' ');
@@ -271,7 +315,10 @@ function PersonNode({ id, data, selected }) {
   };
 
   return (
-    <div className={cls}>
+    <div
+      className={cls}
+      style={s ? { background: s.shade, borderColor: s.border } : undefined}
+    >
       {data.deceased && (
         <svg className="dead-line" viewBox="0 0 120 120" aria-hidden="true">
           <line x1="0" y1="120" x2="120" y2="0" stroke="#1f2937" strokeWidth="2" />
@@ -292,7 +339,54 @@ function PersonNode({ id, data, selected }) {
   );
 }
 
-const nodeTypes = { person: PersonNode };
+// Cuadro del hogar. Sus cuadros de control son grandes para tocar en el celular.
+function HouseholdNode({ id, data, selected }) {
+  const { resizeHousehold } = useContext(Ctx);
+  const colors = HOUSEHOLD_COLORS[data.color] ?? HOUSEHOLD_COLORS.azul;
+  return (
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        boxSizing: 'border-box',
+        background: colors.box,
+        border: '1.5px dashed #6b7280',
+        borderRadius: 12,
+        position: 'relative',
+      }}
+    >
+      <NodeResizer
+        isVisible={selected}
+        minWidth={160}
+        minHeight={120}
+        onResize={(_, p) => resizeHousehold(id, p)}
+        lineStyle={{ borderColor: '#6b7280', borderWidth: 2 }}
+        handleStyle={{
+          width: 22,
+          height: 22,
+          borderRadius: 4,
+          background: '#ffffff',
+          border: '2px solid #374151',
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          top: 6,
+          left: 10,
+          fontSize: 12,
+          fontWeight: 600,
+          color: '#374151',
+          pointerEvents: 'none',
+        }}
+      >
+        {data.label || 'Hogar'}
+      </div>
+    </div>
+  );
+}
+
+const nodeTypes = { person: PersonNode, household: HouseholdNode };
 
 /* ---------- Trazos ---------- */
 
@@ -492,10 +586,9 @@ function Drawings({ graph }) {
     };
   };
   const out = [];
-  const parentLine = {}; // pairKey -> línea de los padres (única horizontal de la pareja)
+  const parentLine = {};
 
-  // 1. Línea de los padres. Es la única horizontal del sistema.
-  //    Cada persona baja desde su base y esta línea une a los dos.
+  // 1. Línea de los padres: única horizontal de la pareja.
   graph.links.forEach((l) => {
     if (l.type !== 'pareja') return;
     const A = byId[l.a];
@@ -529,9 +622,7 @@ function Drawings({ graph }) {
     out.push(<Segment key={`e${l.id}`} def={EMOCION[l.kind] ?? EMOCION.indiferente} {...s} />);
   });
 
-  // 3. Hijos. Solo verticales que bajan desde la línea de los padres.
-  //    Si el hijo queda fuera del largo de esa línea, la línea se extiende hasta él.
-  //    Nunca se dibuja una horizontal nueva.
+  // 3. Hijos: solo verticales que bajan desde la línea de los padres.
   const fam = {};
   for (const l of graph.links) {
     if (l.type !== 'filiacion') continue;
@@ -550,15 +641,8 @@ function Drawings({ graph }) {
       if (pl) {
         fam[famKey] = { type: 'pair', xL: pl.xL, xR: pl.xR, y: pl.y, def: pl.def, children: {} };
       } else {
-        // Un solo padre o madre: la línea de los padres es la bajada de su base
         const pb = box(parents[0]);
-        fam[famKey] = {
-          type: 'single',
-          x: pb.cx,
-          y: pb.bottom,
-          def: LINE,
-          children: {},
-        };
+        fam[famKey] = { type: 'single', x: pb.cx, y: pb.bottom, def: LINE, children: {} };
       }
     }
 
@@ -572,32 +656,29 @@ function Drawings({ graph }) {
     const kids = Object.entries(f.children);
     if (!kids.length) return;
 
+    const solid = [];
+    const dashed = [];
+
     if (f.type === 'pair') {
-      // Extiende la línea de los padres solo si un hijo cae fuera de su largo
       const cxs = kids.map(([, c]) => c.cx);
       const xmin = Math.min(...cxs);
       const xmax = Math.max(...cxs);
       if (xmin < f.xL) {
         out.push(
-          <Segment key={`ext1${i}${famKey}`} def={{ ...f.def, deco: undefined }}
-            x1={xmin} y1={f.y} x2={f.xL} y2={f.y} />
+          <Segment key={`ext1${i}${famKey}`} def={{ ...f.def, deco: undefined }} x1={xmin} y1={f.y} x2={f.xL} y2={f.y} />
         );
       }
       if (xmax > f.xR) {
         out.push(
-          <Segment key={`ext2${i}${famKey}`} def={{ ...f.def, deco: undefined }}
-            x1={f.xR} y1={f.y} x2={xmax} y2={f.y} />
+          <Segment key={`ext2${i}${famKey}`} def={{ ...f.def, deco: undefined }} x1={f.xR} y1={f.y} x2={xmax} y2={f.y} />
         );
       }
-    }
-
-    // Solo verticales: desde la línea de los padres hasta cada hijo
-    const startY = f.type === 'pair' ? f.y : f.y;
-    const solid = [];
-    const dashed = [];
-
-    if (f.type === 'single') {
-      // Bajada desde el padre único hasta la línea que se usa para los hijos
+      kids.forEach(([cid, c]) => {
+        const drop = `M ${c.cx} ${f.y} L ${c.cx} ${c.top}`;
+        if (FILIACION[c.kind]?.dash) dashed.push({ cid, drop, dash: FILIACION[c.kind].dash });
+        else solid.push(drop);
+      });
+    } else {
       const yLine = f.y + PAIR_DROP;
       solid.push(`M ${f.x} ${f.y} L ${f.x} ${yLine}`);
       const cxs = kids.map(([, c]) => c.cx);
@@ -606,12 +687,6 @@ function Drawings({ graph }) {
       if (xmax > xmin) solid.push(`M ${xmin} ${yLine} L ${xmax} ${yLine}`);
       kids.forEach(([cid, c]) => {
         const drop = `M ${c.cx} ${yLine} L ${c.cx} ${c.top}`;
-        if (FILIACION[c.kind]?.dash) dashed.push({ cid, drop, dash: FILIACION[c.kind].dash });
-        else solid.push(drop);
-      });
-    } else {
-      kids.forEach(([cid, c]) => {
-        const drop = `M ${c.cx} ${startY} L ${c.cx} ${c.top}`;
         if (FILIACION[c.kind]?.dash) dashed.push({ cid, drop, dash: FILIACION[c.kind].dash });
         else solid.push(drop);
       });
@@ -677,6 +752,7 @@ function Editor({
   const padres = graph.links.filter((l) => l.type === 'filiacion' && l.b === node.id);
   const hijos = graph.links.filter((l) => l.type === 'filiacion' && l.a === node.id).map((l) => nameOf(l.b));
   const emo = graph.links.filter((l) => l.type === 'emocion' && (l.a === node.id || l.b === node.id));
+  const hogares = graph.households.filter((h) => h.members.includes(node.id)).map((h) => h.label);
 
   const [other, setOther] = useState('');
   const [kind, setKind] = useState('amistad');
@@ -712,6 +788,9 @@ function Editor({
         <input type="checkbox" checked={index} onChange={(e) => onChange({ index: e.target.checked })} />
         Persona índice (doble borde)
       </label>
+
+      <div className="section-title">Hogar</div>
+      <p className="hint">{hogares.length ? hogares.join(', ') : 'No pertenece a ningún hogar.'}</p>
 
       <div className="section-title">Pareja</div>
       {pareja.length === 0 && <p className="hint">Sin pareja. Usa "+ Pareja" sobre la persona.</p>}
@@ -778,6 +857,80 @@ function Editor({
   );
 }
 
+function HouseholdEditor({
+  household, graph, onChange, onMark, onRemoveMember, onAddMember, onDelete, onClose,
+}) {
+  const byId = byIdMap(graph.nodes);
+  const members = household.members.map((id) => byId[id]).filter(Boolean);
+  const available = graph.nodes.filter((n) => !household.members.includes(n.id));
+  const [pick, setPick] = useState('');
+
+  return (
+    <aside className="editor">
+      <div className="editor-head">
+        <strong>Editar hogar</strong>
+        <button className="ghost" onClick={onClose} aria-label="Cerrar">✕</button>
+      </div>
+
+      <label>
+        Nombre del hogar
+        <input value={household.label} onChange={(e) => onChange({ label: e.target.value })} />
+      </label>
+
+      <label>
+        Color
+        <select value={household.color} onChange={(e) => onChange({ color: e.target.value })}>
+          <option value="azul">Azul</option>
+          <option value="verde">Verde</option>
+          <option value="ambar">Ámbar</option>
+          <option value="gris">Gris</option>
+        </select>
+      </label>
+
+      <p className="hint">
+        Arrastra el cuadro para moverlo, o toca sus cuadros de las esquinas y lados para cambiar su tamaño.
+      </p>
+
+      <button className="primary" onClick={onMark}>
+        Marcar miembros tocando personas
+      </button>
+
+      <div className="section-title">Miembros</div>
+      {members.length === 0 && <p className="hint">Este hogar no tiene miembros todavía.</p>}
+      {members.map((m) => (
+        <div key={m.id} className="rel-row">
+          <div className="rel-info">
+            <small>{m.data.name || 'Sin nombre'}</small>
+          </div>
+          <button className="ghost" onClick={() => onRemoveMember(m.id)} aria-label="Quitar del hogar">✕</button>
+        </div>
+      ))}
+
+      <div className="add-rel">
+        <div className="section-title">Agregar miembro</div>
+        <select value={pick} onChange={(e) => setPick(e.target.value)}>
+          <option value="">Elegir persona…</option>
+          {available.map((n) => (
+            <option key={n.id} value={n.id}>{n.data.name || 'Sin nombre'}</option>
+          ))}
+        </select>
+        <button
+          className="primary"
+          disabled={!pick}
+          onClick={() => {
+            onAddMember(pick);
+            setPick('');
+          }}
+        >
+          Agregar
+        </button>
+      </div>
+
+      <button className="danger" onClick={onDelete}>Eliminar hogar</button>
+    </aside>
+  );
+}
+
 function Legend({ graph, onClose }) {
   const used = new Set(graph.links.map((l) => l.kind));
   return (
@@ -810,9 +963,26 @@ function Legend({ graph, onClose }) {
 
 /* ---------- App ---------- */
 
+// Hogares primero (quedan detrás), luego personas
+function flowNodes(g) {
+  const households = g.households.map((h) => ({
+    id: h.id,
+    type: 'household',
+    position: { x: h.x, y: h.y },
+    width: h.width,
+    height: h.height,
+    style: { width: h.width, height: h.height },
+    zIndex: -1,
+    selected: !!h.selected,
+    data: { label: h.label, color: h.color },
+  }));
+  return [...households, ...g.nodes];
+}
+
 export default function App() {
   const [graph, setGraph] = useState(loadInitial);
   const [selectedId, setSelectedId] = useState(null);
+  const [marking, setMarking] = useState(null);     // id del hogar en modo de marcado
   const [showLegend, setShowLegend] = useState(true);
   const fileRef = useRef(null);
 
@@ -824,33 +994,123 @@ export default function App() {
     }
   }, [graph]);
 
-  // Mientras se arrastra, la persona se mueve libremente
+  // Sombreado: cada persona que pertenece a un hogar recibe el color de ese hogar
+  const shade = useMemo(() => {
+    const out = {};
+    for (const h of graph.households) {
+      const c = HOUSEHOLD_COLORS[h.color] ?? HOUSEHOLD_COLORS.azul;
+      for (const pid of h.members) {
+        if (!out[pid]) out[pid] = { shade: c.shade, border: c.border };
+      }
+    }
+    return out;
+  }, [graph.households]);
+
   const onNodesChange = useCallback(
     (changes) =>
       setGraph((g) => {
-        const nodes = applyNodeChanges(changes, g.nodes);
+        const combined = applyNodeChanges(changes, flowNodes(g));
+        const hMap = byIdMap(g.households);
+        const households = combined
+          .filter((n) => n.type === 'household' && hMap[n.id])
+          .map((n) => ({
+            ...hMap[n.id],
+            x: snap(n.position.x),
+            y: snap(n.position.y),
+          }));
+        const nodes = combined.filter((n) => n.type !== 'household');
         const ids = new Set(nodes.map((n) => n.id));
-        return { ...g, nodes, links: g.links.filter((l) => ids.has(l.a) && ids.has(l.b)) };
+        return {
+          ...g,
+          nodes,
+          households,
+          links: g.links.filter((l) => ids.has(l.a) && ids.has(l.b)),
+        };
       }),
     []
   );
 
-  // Al soltar a cualquier persona de la familia, la familia se recentra bajo sus padres
   const onNodeDragStop = useCallback((_, node) => {
+    if (node.type === 'household') return;
     setGraph((g) => relayoutAll(g, node.id));
+  }, []);
+
+  const resizeHousehold = useCallback((id, p) => {
+    setGraph((g) => ({
+      ...g,
+      households: g.households.map((h) =>
+        h.id === id
+          ? { ...h, x: snap(p.x), y: snap(p.y), width: snap(p.width), height: snap(p.height) }
+          : h
+      ),
+    }));
   }, []);
 
   const act = useCallback((type, id) => {
     const newId = uid();
     setGraph((g) => relayoutAll(ACTIONS[type](g, id, newId)));
   }, []);
-  const ctx = useMemo(() => ({ act }), [act]);
+  const ctx = useMemo(() => ({ act, resizeHousehold, shade }), [act, resizeHousehold, shade]);
 
   const selected = find(graph.nodes, selectedId);
+  const selectedHousehold = find(graph.households, selectedId);
+
+  // Toque en una persona: en modo de marcado la agrega o quita del hogar; si no, la selecciona
+  const onNodeClick = useCallback(
+    (_, n) => {
+      if (marking && n.type === 'person') {
+        setGraph((g) => ({
+          ...g,
+          households: g.households.map((h) => {
+            if (h.id !== marking) return h;
+            const has = h.members.includes(n.id);
+            return {
+              ...h,
+              members: has ? h.members.filter((m) => m !== n.id) : [...h.members, n.id],
+            };
+          }),
+        }));
+        return;
+      }
+      setSelectedId(n.id);
+    },
+    [marking]
+  );
+
+  function startMarking() {
+    if (!selectedHousehold) return;
+    setMarking(selectedHousehold.id);
+    setSelectedId(null);
+  }
+
+  function stopMarking() {
+    setMarking(null);
+  }
 
   function addFree() {
     const id = uid();
     setGraph((g) => withNode(g, personNode(id, freeXDir(g.nodes, 300, 150, 1), 150, { name: 'Nueva persona' })));
+    setSelectedId(id);
+  }
+
+  function addHousehold() {
+    const id = uid();
+    setGraph((g) => ({
+      ...g,
+      households: [
+        ...g.households,
+        {
+          id,
+          x: 60 + g.households.length * 30,
+          y: 60 + g.households.length * 30,
+          width: 340,
+          height: 260,
+          label: 'Hogar',
+          color: 'azul',
+          members: [],
+        },
+      ],
+    }));
     setSelectedId(id);
   }
 
@@ -867,6 +1127,7 @@ export default function App() {
         ...g,
         nodes: g.nodes.filter((n) => n.id !== id),
         links: g.links.filter((l) => l.a !== id && l.b !== id),
+        households: g.households.map((h) => ({ ...h, members: h.members.filter((m) => m !== id) })),
       })
     );
     setSelectedId(null);
@@ -885,6 +1146,36 @@ export default function App() {
 
   function addEmotion(a, b, kind) {
     setGraph((g) => withLink(g, mkLink('emocion', a, b, kind)));
+  }
+
+  function updateHousehold(id, patch) {
+    setGraph((g) => ({
+      ...g,
+      households: g.households.map((h) => (h.id === id ? { ...h, ...patch } : h)),
+    }));
+  }
+
+  function removeHouseholdMember(hid, pid) {
+    setGraph((g) => ({
+      ...g,
+      households: g.households.map((h) =>
+        h.id === hid ? { ...h, members: h.members.filter((m) => m !== pid) } : h
+      ),
+    }));
+  }
+
+  function addHouseholdMember(hid, pid) {
+    setGraph((g) => ({
+      ...g,
+      households: g.households.map((h) =>
+        h.id === hid && !h.members.includes(pid) ? { ...h, members: [...h.members, pid] } : h
+      ),
+    }));
+  }
+
+  function deleteHousehold(id) {
+    setGraph((g) => ({ ...g, households: g.households.filter((h) => h.id !== id) }));
+    setSelectedId(null);
   }
 
   function exportJson() {
@@ -907,6 +1198,7 @@ export default function App() {
         if (!Array.isArray(data.nodes)) throw new Error('formato');
         setGraph(normalize(data));
         setSelectedId(null);
+        setMarking(null);
       } catch {
         alert('El archivo no es un genograma válido.');
       }
@@ -920,15 +1212,20 @@ export default function App() {
     setGraph({
       nodes: [personNode(uid(), 300, 150, { name: 'Persona índice', index: true })],
       links: [],
+      households: [],
     });
     setSelectedId(null);
+    setMarking(null);
   }
 
   function resetSample() {
     if (!confirm('¿Restablecer el ejemplo? Se perderán los cambios actuales.')) return;
     setGraph(normalize(SAMPLE));
     setSelectedId(null);
+    setMarking(null);
   }
+
+  const markingHousehold = marking ? find(graph.households, marking) : null;
 
   return (
     <Ctx.Provider value={ctx}>
@@ -937,6 +1234,10 @@ export default function App() {
           <h1>Linaje</h1>
           <div className="toolbar">
             <button className="primary" onClick={addFree}>+ Persona</button>
+            <button onClick={addHousehold}>+ Hogar</button>
+            {selectedHousehold && !marking && (
+              <button onClick={startMarking}>Marcar miembros</button>
+            )}
             <button onClick={() => setShowLegend((v) => !v)}>Leyenda</button>
             <button onClick={exportJson}>Exportar</button>
             <button onClick={() => fileRef.current?.click()}>Importar</button>
@@ -946,16 +1247,25 @@ export default function App() {
           </div>
         </header>
 
+        {markingHousehold && (
+          <div className="marking-bar">
+            <span>
+              Marcando "{markingHousehold.label}": toca las personas que viven aquí para sombrearlas.
+            </span>
+            <button className="primary" onClick={stopMarking}>Listo</button>
+          </div>
+        )}
+
         <div className="body">
           <div className="canvas">
             <ReactFlow
-              nodes={graph.nodes}
+              nodes={flowNodes(graph)}
               edges={[]}
               onNodesChange={onNodesChange}
               onNodeDragStop={onNodeDragStop}
+              onNodeClick={onNodeClick}
               nodesConnectable={false}
               nodeTypes={nodeTypes}
-              onNodeClick={(_, n) => setSelectedId(n.id)}
               onPaneClick={() => setSelectedId(null)}
               fitView
               deleteKeyCode={['Backspace', 'Delete']}
@@ -970,7 +1280,21 @@ export default function App() {
             {showLegend && <Legend graph={graph} onClose={() => setShowLegend(false)} />}
           </div>
 
-          {selected && (
+          {selectedHousehold && !marking && (
+            <HouseholdEditor
+              key={selectedHousehold.id}
+              household={selectedHousehold}
+              graph={graph}
+              onChange={(patch) => updateHousehold(selectedHousehold.id, patch)}
+              onMark={startMarking}
+              onRemoveMember={(pid) => removeHouseholdMember(selectedHousehold.id, pid)}
+              onAddMember={(pid) => addHouseholdMember(selectedHousehold.id, pid)}
+              onDelete={() => deleteHousehold(selectedHousehold.id)}
+              onClose={() => setSelectedId(null)}
+            />
+          )}
+
+          {selected && !selectedHousehold && !marking && (
             <Editor
               key={selected.id}
               node={selected}
