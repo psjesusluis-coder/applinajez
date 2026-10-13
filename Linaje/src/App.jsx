@@ -679,6 +679,125 @@ function downloadUrl(url, filename) {
   a.remove();
 }
 
+/* ---------- Imagen final con leyendas (para Guardar JPG) ---------- */
+
+// Dibuja sobre la imagen del genograma dos recuadros de leyenda, como en la guía:
+// símbolos básicos y leyendas de relaciones usadas. Fondo blanco.
+async function composeWithLegend(flowUrl, rows) {
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error('No se pudo cargar la imagen del genograma'));
+    i.src = flowUrl;
+  });
+
+  const s = 2;
+  const pad = 24 * s;
+  const boxW = 380 * s;
+  const symH = 230 * s;
+  const relH = (70 + Math.max(rows.length, 1) * 28) * s;
+  const W = Math.max(img.width, boxW + pad * 2);
+  const H = img.height + pad + symH + pad + relH + pad;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+  ctx.drawImage(img, 0, 0);
+
+  const font = (size, weight = '400') => `${weight} ${size * s}px "Segoe UI", Roboto, Arial, sans-serif`;
+
+  const frame = (x, y, w, h, title) => {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#9ca3af';
+    ctx.lineWidth = s;
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillStyle = '#111827';
+    ctx.font = font(17);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(title, x + w / 2, y + 14 * s);
+    ctx.textAlign = 'left';
+  };
+
+  // Recuadro 1: símbolos básicos
+  const bx = pad;
+  const by = img.height + pad;
+  frame(bx, by, boxW, symH, 'Símbolos del genograma');
+
+  const X = (v) => bx + v * s;
+  const Y = (v) => by + v * s;
+
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 2 * s;
+
+  // Hombre (cuadrado) y mujer (círculo) con su unión
+  ctx.strokeRect(X(70), Y(70), 30 * s, 30 * s);
+  ctx.beginPath();
+  ctx.arc(X(290), Y(85), 15 * s, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(X(85), Y(100));
+  ctx.lineTo(X(85), Y(125));
+  ctx.lineTo(X(290), Y(125));
+  ctx.lineTo(X(290), Y(100));
+  ctx.stroke();
+
+  // Bajada a los hijos
+  ctx.beginPath();
+  ctx.moveTo(X(187), Y(125));
+  ctx.lineTo(X(187), Y(145));
+  ctx.moveTo(X(150), Y(145));
+  ctx.lineTo(X(230), Y(145));
+  ctx.moveTo(X(150), Y(145));
+  ctx.lineTo(X(150), Y(172));
+  ctx.moveTo(X(230), Y(145));
+  ctx.lineTo(X(230), Y(172));
+  ctx.stroke();
+
+  // Hijo (cuadrado) e hija (círculo)
+  ctx.strokeRect(X(142), Y(172), 16 * s, 16 * s);
+  ctx.beginPath();
+  ctx.arc(X(230), Y(180), 8 * s, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = '#374151';
+  ctx.font = font(11);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText('Masculino', X(150), Y(196));
+  ctx.fillText('Femenino', X(230), Y(196));
+  ctx.textAlign = 'left';
+
+  // Recuadro 2: leyendas de relaciones usadas
+  const ry = by + symH + pad;
+  frame(bx, ry, boxW, relH, 'Leyendas de relaciones familiares');
+
+  rows.forEach((row, i) => {
+    const ly = ry + (52 + i * 28) * s + 8 * s;
+    const d = row.def;
+    ctx.strokeStyle = d.color;
+    ctx.lineWidth = d.width * s;
+    ctx.setLineDash(d.dash ? d.dash.split(' ').map((n) => Number(n) * s) : []);
+    ctx.beginPath();
+    ctx.moveTo(bx + 30 * s, ly);
+    ctx.lineTo(bx + 90 * s, ly);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = '#1f2937';
+    ctx.font = font(13);
+    ctx.textBaseline = 'middle';
+    ctx.fillText(row.label, bx + 100 * s, ly);
+  });
+
+  return canvas.toDataURL('image/jpeg', 0.95);
+}
+
 /* ---------- Nodo de persona ---------- */
 
 function PersonNode({ id, data, selected }) {
@@ -1758,7 +1877,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
-  // Guardar JPG: encuadra todo el genograma, oculta controles y guarda una imagen con fondo blanco
+  // Guardar JPG: encuadra el genograma, lo captura con fondo blanco y agrega las dos leyendas
   async function saveJpg() {
     const name = (prompt('Nombre del archivo', 'genograma') || '').trim() || 'genograma';
     const flow = canvasRef.current?.querySelector('.react-flow');
@@ -1771,7 +1890,7 @@ export default function App() {
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
     try {
-      const dataUrl = await toJpeg(flow, {
+      const flowUrl = await toJpeg(flow, {
         quality: 0.95,
         pixelRatio: 2,
         backgroundColor: '#ffffff',
@@ -1786,7 +1905,17 @@ export default function App() {
           );
         },
       });
-      downloadUrl(dataUrl, `${name}.jpg`);
+
+      // Solo se listan en la leyenda las relaciones que existen en el genograma
+      const used = new Set(graph.links.map((l) => l.kind));
+      const rows = GROUPS.flatMap((gr) =>
+        Object.entries(gr.defs)
+          .filter(([k]) => used.has(k))
+          .map(([, d]) => ({ label: d.label, def: d }))
+      );
+
+      const finalUrl = await composeWithLegend(flowUrl, rows);
+      downloadUrl(finalUrl, `${name}.jpg`);
     } catch (err) {
       console.error('Error al guardar JPG:', err);
       alert('No se pudo guardar la imagen. Revisa la consola (F12) para ver el detalle.');
