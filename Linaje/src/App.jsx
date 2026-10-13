@@ -6,18 +6,19 @@ import {
   applyNodeChanges, useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { toJpeg } from 'html-to-image';
 import { PAREJA, FILIACION, EMOCION, GROUPS, ALL, LEGACY } from './relations.js';
 
 const STORAGE_KEY = 'linaje-genograma-v6';
 const NODE = 120;
 const HALF = 60;
-const PAIR_DROP = 30;   // bajada desde la base de cada persona hasta la línea de los padres
-const GEN_GAP = 230;    // distancia vertical entre generaciones
-const PAIR_GAP = 190;   // distancia horizontal de centro a centro en pareja
-const SIB_GAP = 170;    // distancia horizontal de centro a centro entre hijos
+const PAIR_DROP = 30;
+const GEN_GAP = 230;
+const PAIR_GAP = 190;
+const SIB_GAP = 170;
 const LINE = { color: '#000000', width: 2 };
-const HALO = 90;        // separación entre los miembros y el contorno del hogar
-const PAD = 40;         // margen de la capa de relleno alrededor de la forma
+const HALO = 90;
+const PAD = 40;
 
 const HOUSEHOLD_COLORS = {
   azul: { box: 'rgba(37, 99, 235, 0.12)', border: '#1d4ed8' },
@@ -26,7 +27,6 @@ const HOUSEHOLD_COLORS = {
   gris: { box: 'rgba(107, 114, 128, 0.12)', border: '#374151' },
 };
 
-// Vínculos que se pueden elegir en el formulario de preguntas
 const REL_OPTIONS = [
   { value: 'padre', label: 'Padre', gender: 'M' },
   { value: 'madre', label: 'Madre', gender: 'F' },
@@ -62,7 +62,6 @@ const rectPoints = (x, y, w, h) => [
   { x, y: y + h },
 ];
 
-// Polígono recto: solo líneas rectas entre esquinas
 function polyPath(pts) {
   if (pts.length < 3) return '';
   return `M ${pts.map((p) => `${p.x} ${p.y}`).join(' L ')} Z`;
@@ -81,7 +80,6 @@ function bounds(pts) {
   return { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) };
 }
 
-// Casco convexo (cadena monótona)
 function convexHull(points) {
   const p = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
   if (p.length < 3) return p;
@@ -102,7 +100,6 @@ function convexHull(points) {
   return lower.concat(upper);
 }
 
-// Contorno recto que envuelve a los miembros
 function fitPoints(household, nodes) {
   const members = household.members.map((id) => find(nodes, id)).filter(Boolean);
   if (!members.length) return household.points;
@@ -119,7 +116,6 @@ function fitPoints(household, nodes) {
   return hull.length >= 3 ? hull : household.points;
 }
 
-// Punto dentro de un polígono (regla del rayo)
 function pointInPoly(x, y, poly) {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -170,7 +166,6 @@ function spouseSlot(nodes, p, newGender) {
   return freeXDir(nodes, p.position.x + dir * PAIR_GAP, p.position.y, dir);
 }
 
-// Centra a los hijos de cada familia bajo el punto medio de sus padres.
 function relayoutOnce(g, onlyId) {
   const byId = byIdMap(g.nodes);
   const families = {};
@@ -323,7 +318,6 @@ function buildFromAnswers({ person, members }) {
     return id;
   };
 
-  // Padre, madre y hermanos. Si falta uno de los padres, se crea un nodo para completar la pareja.
   const hasParents = Boolean(padreRow || madreRow || hermanos.length);
   if (hasParents) {
     const paId = addPerson(
@@ -353,7 +347,6 @@ function buildFromAnswers({ person, members }) {
     });
   }
 
-  // Pareja actual: si se indicó, o si hay hijos y no hay pareja, se crea una del sexo opuesto
   let partnerId = null;
   if (parejaRow || hijos.length) {
     partnerId = addPerson(
@@ -367,17 +360,14 @@ function buildFromAnswers({ person, members }) {
     links.push(mkLink('pareja', idxId, partnerId, 'matrimonio'));
   }
 
-  // Hijos: bajan de la persona y de su pareja
   const kidParents = partnerId ? [idxId, partnerId] : [idxId];
   hijos.forEach((h, i) => {
     const id = addPerson(rowName(h), h.edad, REL_GENDER[h.vinculo] ?? opposite(idxGender), i * SIB_GAP, 350, true);
     kidParents.forEach((p) => links.push(mkLink('filiacion', p, id, 'biologico')));
   });
 
-  // Primer acomodo de familias
   let g = relayoutAll({ nodes, links, households: [] });
 
-  // La pareja se coloca junto a la persona principal y luego se recentran los hijos
   if (partnerId) {
     const idx = find(g.nodes, idxId);
     const others = g.nodes.filter((n) => n.id !== partnerId);
@@ -389,7 +379,6 @@ function buildFromAnswers({ person, members }) {
     g = relayoutAll(g);
   }
 
-  // Hogar: la persona principal y quienes aparecen en la tabla
   const household = {
     id: uid(),
     label: `Hogar de ${idxName}`,
@@ -669,6 +658,16 @@ function loadInitial() {
   return normalize(SAMPLE);
 }
 
+// Descarga un archivo desde una URL o un Blob
+function downloadUrl(url, filename) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 /* ---------- Nodo de persona ---------- */
 
 function PersonNode({ id, data, selected }) {
@@ -725,7 +724,6 @@ function PersonNode({ id, data, selected }) {
   );
 }
 
-// Relleno del hogar: nodo de fondo, detrás de las personas, sin interacción
 function HouseholdFill({ data }) {
   const c = HOUSEHOLD_COLORS[data.color] ?? HOUSEHOLD_COLORS.azul;
   return (
@@ -1108,7 +1106,6 @@ function Drawings({ graph }) {
   const out = [];
   const parentLine = {};
 
-  // 1. Línea de los padres: única horizontal de la pareja.
   graph.links.forEach((l) => {
     if (l.type !== 'pareja') return;
     const A = byId[l.a];
@@ -1131,7 +1128,6 @@ function Drawings({ graph }) {
     parentLine[pairKey(l.a, l.b)] = { xL: L.cx, xR: R.cx, y: yU, def };
   });
 
-  // 2. Relaciones emocionales: diagonal de individuo a individuo
   graph.links.forEach((l) => {
     if (l.type !== 'emocion') return;
     const A = byId[l.a];
@@ -1142,7 +1138,6 @@ function Drawings({ graph }) {
     out.push(<Segment key={`e${l.id}`} def={EMOCION[l.kind] ?? EMOCION.indiferente} {...s} />);
   });
 
-  // 3. Hijos: solo verticales que bajan desde la línea de los padres.
   const fam = {};
   for (const l of graph.links) {
     if (l.type !== 'filiacion') continue;
@@ -1486,7 +1481,6 @@ function Legend({ graph, onClose }) {
 
 /* ---------- App ---------- */
 
-// Nodos de fondo (hogares) y personas. Los hogares no son interactivos.
 function flowNodes(g, selectedId) {
   const fills = g.households.map((h) => {
     const bb = bounds(h.points);
@@ -1524,6 +1518,8 @@ export default function App() {
   const [showLegend, setShowLegend] = useState(true);
   const [showQuestions, setShowQuestions] = useState(false);
   const fileRef = useRef(null);
+  const canvasRef = useRef(null);
+  const rfRef = useRef(null);
 
   useEffect(() => {
     try {
@@ -1533,7 +1529,6 @@ export default function App() {
     }
   }, [graph]);
 
-  // Color del punto que indica pertenencia a un hogar (no tiñe a la persona)
   const marks = useMemo(() => {
     const out = {};
     for (const h of graph.households) {
@@ -1642,7 +1637,6 @@ export default function App() {
     setSelectedId(id);
   }
 
-  // Reemplaza el genograma actual por el armado con las respuestas
   function applyAnswers(answers) {
     if (graph.nodes.length && !confirm('¿Armar un genograma nuevo? Reemplaza el actual.')) return;
     setGraph(buildFromAnswers(answers));
@@ -1745,14 +1739,42 @@ export default function App() {
     setSelectedId(null);
   }
 
-  function exportJson() {
+  // Guardar: descarga el genograma como archivo JSON con el nombre elegido
+  function saveGenogram() {
+    const name = (prompt('Nombre del archivo', 'genograma') || '').trim() || 'genograma';
     const blob = new Blob([JSON.stringify(serialize(graph), null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'genograma.json';
-    a.click();
+    downloadUrl(url, `${name}.json`);
     URL.revokeObjectURL(url);
+  }
+
+  // Exportar JPG: ajusta la vista para que quepa todo y guarda una imagen sin controles
+  async function exportJpg() {
+    const name = (prompt('Nombre del archivo', 'genograma') || '').trim() || 'genograma';
+    const flow = canvasRef.current?.querySelector('.react-flow');
+    if (!flow) return;
+
+    rfRef.current?.fitView({ padding: 0.12, duration: 0 });
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    try {
+      const dataUrl = await toJpeg(flow, {
+        quality: 0.95,
+        pixelRatio: 2,
+        backgroundColor: '#ffffff',
+        filter: (node) =>
+          !(
+            node.classList &&
+            (node.classList.contains('react-flow__controls') ||
+              node.classList.contains('react-flow__minimap') ||
+              node.classList.contains('react-flow__attribution'))
+          ),
+      });
+      downloadUrl(dataUrl, `${name}.jpg`);
+    } catch (err) {
+      alert('No se pudo exportar la imagen. Revisa la consola para ver el detalle.');
+      console.error(err);
+    }
   }
 
   function importJson(e) {
@@ -1808,7 +1830,8 @@ export default function App() {
               <button onClick={startMarking}>Marcar miembros</button>
             )}
             <button onClick={() => setShowLegend((v) => !v)}>Leyenda</button>
-            <button onClick={exportJson}>Exportar</button>
+            <button onClick={saveGenogram}>Guardar</button>
+            <button onClick={exportJpg}>Exportar JPG</button>
             <button onClick={() => fileRef.current?.click()}>Importar</button>
             <input ref={fileRef} type="file" accept="application/json" hidden onChange={importJson} />
             <button className="ghost" onClick={newGenogram}>Nuevo</button>
@@ -1826,10 +1849,13 @@ export default function App() {
         )}
 
         <div className="body">
-          <div className="canvas">
+          <div className="canvas" ref={canvasRef}>
             <ReactFlow
               nodes={flowNodes(graph, selectedId)}
               edges={[]}
+              onInit={(inst) => {
+                rfRef.current = inst;
+              }}
               onNodesChange={onNodesChange}
               onNodeDragStop={onNodeDragStop}
               onNodeClick={onNodeClick}
