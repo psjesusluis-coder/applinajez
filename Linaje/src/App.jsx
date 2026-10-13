@@ -13,7 +13,7 @@ const HALF = 60;
 const PAIR_DROP = 30;   // bajada desde la base de cada persona hasta la línea de los padres
 const GEN_GAP = 230;    // distancia vertical entre generaciones
 const PAIR_GAP = 190;   // distancia horizontal de centro a centro en pareja
-const SIB_GAP = 170;    // distancia horizontal de centro a centro entre hermanos
+const SIB_GAP = 170;    // distancia horizontal de centro a centro entre hijos
 const LINE = { color: '#000000', width: 2 };
 const Ctx = createContext({ act: () => {} });
 
@@ -492,9 +492,10 @@ function Drawings({ graph }) {
     };
   };
   const out = [];
-  const pairLine = {}; // pairKey -> línea horizontal de los padres { xL, xR, y }
+  const parentLine = {}; // pairKey -> línea de los padres (única horizontal de la pareja)
 
-  // 1. Pareja: cada persona baja desde su base y la barra horizontal une a los dos.
+  // 1. Línea de los padres. Es la única horizontal del sistema.
+  //    Cada persona baja desde su base y esta línea une a los dos.
   graph.links.forEach((l) => {
     if (l.type !== 'pareja') return;
     const A = byId[l.a];
@@ -514,7 +515,7 @@ function Drawings({ graph }) {
     out.push(<Segment key={`pr${l.id}`} def={stemDef} x1={R.cx} y1={R.bottom} x2={R.cx} y2={yU} />);
     out.push(<Segment key={`ph${l.id}`} def={def} x1={L.cx} y1={yU} x2={R.cx} y2={yU} />);
 
-    pairLine[pairKey(l.a, l.b)] = { xL: L.cx, xR: R.cx, y: yU };
+    parentLine[pairKey(l.a, l.b)] = { xL: L.cx, xR: R.cx, y: yU, def };
   });
 
   // 2. Relaciones emocionales: diagonal de individuo a individuo
@@ -528,9 +529,9 @@ function Drawings({ graph }) {
     out.push(<Segment key={`e${l.id}`} def={EMOCION[l.kind] ?? EMOCION.indiferente} {...s} />);
   });
 
-  // 3. Filiación. Los hijos bajan directamente de la línea de los padres.
-  //    No existe barra de hermanos: si un hijo queda fuera del largo de la pareja,
-  //    la misma línea de los padres se extiende hasta él.
+  // 3. Hijos. Solo verticales que bajan desde la línea de los padres.
+  //    Si el hijo queda fuera del largo de esa línea, la línea se extiende hasta él.
+  //    Nunca se dibuja una horizontal nueva.
   const fam = {};
   for (const l of graph.links) {
     if (l.type !== 'filiacion') continue;
@@ -541,19 +542,21 @@ function Drawings({ graph }) {
 
     const famKey = parents.map((p) => p.id).sort().join('|');
     if (!fam[famKey]) {
-      if (parents.length === 2 && spouseLinked(graph, parents[0].id, parents[1].id)) {
-        const pl = pairLine[pairKey(parents[0].id, parents[1].id)];
-        if (pl) {
-          fam[famKey] = { type: 'pair', xL: pl.xL, xR: pl.xR, yLine: pl.y, children: {} };
-        }
-      }
-      if (!fam[famKey]) {
+      const pl =
+        parents.length === 2 && spouseLinked(graph, parents[0].id, parents[1].id)
+          ? parentLine[pairKey(parents[0].id, parents[1].id)]
+          : null;
+
+      if (pl) {
+        fam[famKey] = { type: 'pair', xL: pl.xL, xR: pl.xR, y: pl.y, def: pl.def, children: {} };
+      } else {
+        // Un solo padre o madre: la línea de los padres es la bajada de su base
         const pb = box(parents[0]);
         fam[famKey] = {
           type: 'single',
-          startX: pb.cx,
-          startY: pb.bottom,
-          yLine: pb.bottom + PAIR_DROP,
+          x: pb.cx,
+          y: pb.bottom,
+          def: LINE,
           children: {},
         };
       }
@@ -569,33 +572,50 @@ function Drawings({ graph }) {
     const kids = Object.entries(f.children);
     if (!kids.length) return;
 
-    const yLine = f.yLine;
-    const cxs = kids.map(([, c]) => c.cx);
+    if (f.type === 'pair') {
+      // Extiende la línea de los padres solo si un hijo cae fuera de su largo
+      const cxs = kids.map(([, c]) => c.cx);
+      const xmin = Math.min(...cxs);
+      const xmax = Math.max(...cxs);
+      if (xmin < f.xL) {
+        out.push(
+          <Segment key={`ext1${i}${famKey}`} def={{ ...f.def, deco: undefined }}
+            x1={xmin} y1={f.y} x2={f.xL} y2={f.y} />
+        );
+      }
+      if (xmax > f.xR) {
+        out.push(
+          <Segment key={`ext2${i}${famKey}`} def={{ ...f.def, deco: undefined }}
+            x1={f.xR} y1={f.y} x2={xmax} y2={f.y} />
+        );
+      }
+    }
+
+    // Solo verticales: desde la línea de los padres hasta cada hijo
+    const startY = f.type === 'pair' ? f.y : f.y;
     const solid = [];
     const dashed = [];
 
-    if (f.type === 'pair') {
-      // La línea de la pareja ya existe entre xL y xR; solo se dibujan las partes que salen de ella
-      const xmin = Math.min(...cxs);
-      const xmax = Math.max(...cxs);
-      if (xmin < f.xL) solid.push(`M ${xmin} ${yLine} L ${f.xL} ${yLine}`);
-      if (xmax > f.xR) solid.push(`M ${f.xR} ${yLine} L ${xmax} ${yLine}`);
-    } else {
-      // Padre o madre único: su bajada llega a la línea y de ahí salen los hijos
-      solid.push(`M ${f.startX} ${f.startY} L ${f.startX} ${yLine}`);
-      const xmin = Math.min(...cxs, f.startX);
-      const xmax = Math.max(...cxs, f.startX);
+    if (f.type === 'single') {
+      // Bajada desde el padre único hasta la línea que se usa para los hijos
+      const yLine = f.y + PAIR_DROP;
+      solid.push(`M ${f.x} ${f.y} L ${f.x} ${yLine}`);
+      const cxs = kids.map(([, c]) => c.cx);
+      const xmin = Math.min(...cxs, f.x);
+      const xmax = Math.max(...cxs, f.x);
       if (xmax > xmin) solid.push(`M ${xmin} ${yLine} L ${xmax} ${yLine}`);
+      kids.forEach(([cid, c]) => {
+        const drop = `M ${c.cx} ${yLine} L ${c.cx} ${c.top}`;
+        if (FILIACION[c.kind]?.dash) dashed.push({ cid, drop, dash: FILIACION[c.kind].dash });
+        else solid.push(drop);
+      });
+    } else {
+      kids.forEach(([cid, c]) => {
+        const drop = `M ${c.cx} ${startY} L ${c.cx} ${c.top}`;
+        if (FILIACION[c.kind]?.dash) dashed.push({ cid, drop, dash: FILIACION[c.kind].dash });
+        else solid.push(drop);
+      });
     }
-
-    kids.forEach(([cid, c]) => {
-      const drop = `M ${c.cx} ${yLine} L ${c.cx} ${c.top}`;
-      if (FILIACION[c.kind]?.dash) {
-        dashed.push({ cid, drop, dash: FILIACION[c.kind].dash });
-      } else {
-        solid.push(drop);
-      }
-    });
 
     if (solid.length) {
       out.push(
