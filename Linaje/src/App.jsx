@@ -15,8 +15,12 @@ const BUS_GAP = 40;     // distancia desde el punto medio de la pareja hasta la 
 const GEN_GAP = 200;    // distancia vertical entre generaciones
 const PAIR_GAP = 190;   // distancia horizontal de centro a centro en pareja
 const SIB_GAP = 170;    // distancia horizontal de centro a centro entre hermanos
-const LINE = { color: '#000000', width: 2 };   // mismo grosor para toda la filiación
+const LINE = { color: '#000000', width: 2 };   // mismo grosor para toda la estructura
 const Ctx = createContext({ act: () => {} });
+
+// Todas las coordenadas de la estructura se llevan a píxeles enteros.
+// Con medios píxeles, la misma línea de 2 px se ve más gruesa en un tramo que en otro.
+const snap = (v) => Math.round(v);
 
 const uid = () =>
   globalThis.crypto?.randomUUID?.() ??
@@ -67,7 +71,7 @@ function spouseSlot(nodes, p, newGender) {
 }
 
 // Centra a los hijos de cada familia bajo el punto medio de sus padres.
-// Se usa solo al crear, quitar o cambiar relaciones; no al arrastrar.
+// Se usa al crear, quitar o cambiar relaciones; no al arrastrar.
 function relayoutAll(g) {
   const byId = byIdMap(g.nodes);
   const families = {};
@@ -93,7 +97,7 @@ function relayoutAll(g) {
       .sort((a, b) => a.position.x - b.position.x);
     const n = kids.length;
     kids.forEach((kid, i) => {
-      pos[kid.id] = { x: midCx - HALF + (i - (n - 1) / 2) * SIB_GAP, y };
+      pos[kid.id] = { x: Math.round(midCx - HALF + (i - (n - 1) / 2) * SIB_GAP), y: Math.round(y) };
     });
   }
 
@@ -477,18 +481,23 @@ function clipBetween(A, B) {
 
 function Drawings({ graph }) {
   const byId = byIdMap(graph.nodes);
-  const box = (n) => ({
-    id: n.id,
-    gender: n.data.gender,
-    left: n.position.x,
-    right: n.position.x + NODE,
-    cx: n.position.x + HALF,
-    cy: n.position.y + HALF,
-    top: n.position.y,
-    bottom: n.position.y + NODE,
-  });
+  // Todas las medidas de la estructura salen de aquí, ya en enteros
+  const box = (n) => {
+    const x = snap(n.position.x);
+    const y = snap(n.position.y);
+    return {
+      id: n.id,
+      gender: n.data.gender,
+      left: x,
+      right: x + NODE,
+      cx: x + HALF,
+      cy: y + HALF,
+      top: y,
+      bottom: y + NODE,
+    };
+  };
   const out = [];
-  const pairPoint = {}; // pairKey -> punto medio de la barra de pareja
+  const pairPoint = {}; // pairKey -> punto medio de la barra de pareja (enteros)
 
   // 1. Pareja: cada persona baja desde su base, la barra horizontal une a los dos.
   //    El esposo a la izquierda, la esposa a la derecha.
@@ -503,15 +512,21 @@ function Drawings({ graph }) {
       const mq = q.gender === 'M' ? 0 : 1;
       return mp - mq || p.cx - q.cx;
     });
-    const yU = Math.max(L.bottom, R.bottom) + PAIR_DROP;
+    const yU = snap(Math.max(L.bottom, R.bottom) + PAIR_DROP);
     const def = PAREJA[l.kind] ?? PAREJA.matrimonio;
     const stemDef = { ...def, deco: undefined };
 
-    out.push(<Segment key={`pl${l.id}`} def={stemDef} x1={L.cx} y1={L.bottom} x2={L.cx} y2={yU} />);
-    out.push(<Segment key={`pr${l.id}`} def={stemDef} x1={R.cx} y1={R.bottom} x2={R.cx} y2={yU} />);
-    out.push(<Segment key={`ph${l.id}`} def={def} x1={L.cx} y1={yU} x2={R.cx} y2={yU} />);
+    out.push(
+      <Segment key={`pl${l.id}`} def={stemDef} x1={L.cx} y1={L.bottom} x2={L.cx} y2={yU} />
+    );
+    out.push(
+      <Segment key={`pr${l.id}`} def={stemDef} x1={R.cx} y1={R.bottom} x2={R.cx} y2={yU} />
+    );
+    out.push(
+      <Segment key={`ph${l.id}`} def={def} x1={L.cx} y1={yU} x2={R.cx} y2={yU} />
+    );
 
-    pairPoint[pairKey(l.a, l.b)] = { x: (L.cx + R.cx) / 2, y: yU };
+    pairPoint[pairKey(l.a, l.b)] = { x: snap((L.cx + R.cx) / 2), y: yU };
   });
 
   // 2. Relaciones emocionales: diagonal de individuo a individuo
@@ -526,11 +541,10 @@ function Drawings({ graph }) {
   });
 
   // 3. Filiación. Agrupa a los hijos por familia.
-  //    - Un solo hijo: UNA línea recta desde el punto medio de la pareja hasta el hijo.
-  //    - Varios hijos: una bajada, una barra horizontal y una bajada corta a cada hijo.
-  //    Todas usan el mismo grosor (LINE). Solo cambia el trazo en adoptados y sustitutos.
-  const lineFor = (kind) => ({ ...LINE, dash: FILIACION[kind]?.dash });
-
+  //    Cada familia es UN solo trazo que nace en el punto medio de la pareja:
+  //    tronco -> barra de hermanos -> bajada a cada hijo.
+  //    Todo en enteros y con crispEdges, para que no se vea partido.
+  //    Los hijos adoptados o sustitutos se dibujan con su trazo punteado.
   const fam = {};
   for (const l of graph.links) {
     if (l.type !== 'filiacion') continue;
@@ -540,4 +554,35 @@ function Drawings({ graph }) {
     if (!parents.length) continue;
 
     const famKey = parents.map((p) => p.id).sort().join('|');
-    if
+    if (!fam[famKey]) {
+      let anchor;
+      if (parents.length === 2 && spouseLinked(graph, parents[0].id, parents[1].id)) {
+        anchor = pairPoint[pairKey(parents[0].id, parents[1].id)];
+      } else if (parents.length === 1) {
+        const pb = box(parents[0]);
+        anchor = { x: pb.cx, y: pb.bottom };
+      } else {
+        const bs = parents.map(box);
+        anchor = {
+          x: snap(bs.reduce((s, b) => s + b.cx, 0) / bs.length),
+          y: Math.max(...bs.map((b) => b.bottom)),
+        };
+      }
+      if (!anchor) continue;
+      fam[famKey] = { anchor, children: {} };
+    }
+
+    if (!fam[famKey].children[child.id]) {
+      const cb = box(child);
+      fam[famKey].children[child.id] = { cx: cb.cx, top: cb.top, kind: l.kind };
+    }
+  }
+
+  Object.entries(fam).forEach(([famKey, f], i) => {
+    const kids = Object.entries(f.children);
+    if (!kids.length) return;
+    const x = snap(f.anchor.x);
+    const y = snap(f.anchor.y);
+    const busY = snap(y + BUS_GAP);
+
+    const
