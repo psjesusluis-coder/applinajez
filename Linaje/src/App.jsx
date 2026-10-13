@@ -53,6 +53,18 @@ const opposite = (gender) => (gender === 'F' ? 'M' : 'F');
 const pairKey = (a, b) => [a, b].sort().join('|');
 const ageText = (age) => (age ? `${age} años` : '');
 
+/* ---------- Ícono de descarga ---------- */
+
+function DownloadIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3v12" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M5 21h14" />
+    </svg>
+  );
+}
+
 /* ---------- Geometría del hogar (formas rectas) ---------- */
 
 const rectPoints = (x, y, w, h) => [
@@ -1727,4 +1739,207 @@ export default function App() {
   function addHouseholdMember(hid, pid) {
     setGraph((g) => ({
       ...g,
-      households:
+      households: g.households.map((h) =>
+        h.id === hid && !h.members.includes(pid) ? { ...h, members: [...h.members, pid] } : h
+      ),
+    }));
+  }
+
+  function deleteHousehold(id) {
+    setGraph((g) => ({ ...g, households: g.households.filter((h) => h.id !== id) }));
+    setSelectedId(null);
+  }
+
+  function saveGenogram() {
+    const name = (prompt('Nombre del archivo', 'genograma') || '').trim() || 'genograma';
+    const blob = new Blob([JSON.stringify(serialize(graph), null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    downloadUrl(url, `${name}.json`);
+    URL.revokeObjectURL(url);
+  }
+
+  // Guardar JPG: encuadra todo el genograma, oculta controles y guarda una imagen con fondo blanco
+  async function saveJpg() {
+    const name = (prompt('Nombre del archivo', 'genograma') || '').trim() || 'genograma';
+    const flow = canvasRef.current?.querySelector('.react-flow');
+    if (!flow) {
+      alert('No se encontró el genograma para guardar.');
+      return;
+    }
+
+    rfRef.current?.fitView({ padding: 0.12, duration: 0 });
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    try {
+      const dataUrl = await toJpeg(flow, {
+        quality: 0.95,
+        pixelRatio: 2,
+        backgroundColor: '#ffffff',
+        cacheBust: true,
+        filter: (node) => {
+          if (!node.classList) return true;
+          return !(
+            node.classList.contains('react-flow__controls') ||
+            node.classList.contains('react-flow__minimap') ||
+            node.classList.contains('react-flow__attribution') ||
+            node.classList.contains('react-flow__panel')
+          );
+        },
+      });
+      downloadUrl(dataUrl, `${name}.jpg`);
+    } catch (err) {
+      console.error('Error al guardar JPG:', err);
+      alert('No se pudo guardar la imagen. Revisa la consola (F12) para ver el detalle.');
+    }
+  }
+
+  function importJson(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (!Array.isArray(data.nodes)) throw new Error('formato');
+        setGraph(normalize(data));
+        setSelectedId(null);
+        setMarking(null);
+      } catch {
+        alert('El archivo no es un genograma válido.');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }
+
+  function newGenogram() {
+    if (!confirm('¿Crear un genograma nuevo? Se perderá el actual.')) return;
+    setGraph({
+      nodes: [personNode(uid(), 300, 150, { name: 'Persona índice', index: true })],
+      links: [],
+      households: [],
+    });
+    setSelectedId(null);
+    setMarking(null);
+  }
+
+  function resetSample() {
+    if (!confirm('¿Restablecer el ejemplo? Se perderán los cambios actuales.')) return;
+    setGraph(normalize(SAMPLE));
+    setSelectedId(null);
+    setMarking(null);
+  }
+
+  const markingHousehold = marking ? find(graph.households, marking) : null;
+
+  return (
+    <Ctx.Provider value={ctx}>
+      <div className="app">
+        <header className="topbar">
+          <h1>Linaje</h1>
+          <div className="toolbar">
+            <button className="primary" onClick={() => setShowQuestions(true)}>❓ Preguntas</button>
+            <button onClick={addFamilyUnit}>+ Familia</button>
+            <button onClick={addFree}>+ Persona</button>
+            <button onClick={addHousehold}>+ Hogar</button>
+            {selectedHousehold && !marking && (
+              <button onClick={startMarking}>Marcar miembros</button>
+            )}
+            <button onClick={() => setShowLegend((v) => !v)}>Leyenda</button>
+            <button onClick={saveGenogram}>Guardar</button>
+            <button
+              onClick={saveJpg}
+              title="Guardar como imagen JPG"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <DownloadIcon />
+              Guardar JPG
+            </button>
+            <button onClick={() => fileRef.current?.click()}>Importar</button>
+            <input ref={fileRef} type="file" accept="application/json" hidden onChange={importJson} />
+            <button className="ghost" onClick={newGenogram}>Nuevo</button>
+            <button className="ghost" onClick={resetSample}>Ejemplo</button>
+          </div>
+        </header>
+
+        {markingHousehold && (
+          <div className="marking-bar">
+            <span>
+              Marcando "{markingHousehold.label}": toca las personas que viven aquí para marcarlas.
+            </span>
+            <button className="primary" onClick={stopMarking}>Listo</button>
+          </div>
+        )}
+
+        <div className="body">
+          <div className="canvas" ref={canvasRef}>
+            <ReactFlow
+              nodes={flowNodes(graph, selectedId)}
+              edges={[]}
+              onInit={(inst) => {
+                rfRef.current = inst;
+              }}
+              onNodesChange={onNodesChange}
+              onNodeDragStop={onNodeDragStop}
+              onNodeClick={onNodeClick}
+              nodesConnectable={false}
+              nodeTypes={nodeTypes}
+              onPaneClick={() => setSelectedId(null)}
+              fitView
+              deleteKeyCode={['Backspace', 'Delete']}
+            >
+              <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#d6d3d1" />
+              <Controls />
+              <MiniMap pannable zoomable />
+              <ViewportPortal>
+                <HouseholdControls
+                  households={graph.households}
+                  selectedId={selectedId}
+                  onSelect={selectHousehold}
+                  marking={marking}
+                />
+                <Drawings graph={graph} />
+              </ViewportPortal>
+            </ReactFlow>
+            {showLegend && <Legend graph={graph} onClose={() => setShowLegend(false)} />}
+          </div>
+
+          {selectedHousehold && !marking && (
+            <HouseholdEditor
+              key={selectedHousehold.id}
+              household={selectedHousehold}
+              graph={graph}
+              onChange={(patch) => updateHousehold(selectedHousehold.id, patch)}
+              onMark={startMarking}
+              onFit={() => fitHousehold(selectedHousehold.id)}
+              onRemoveCorner={() => removeCorner(selectedHousehold.id)}
+              onCapture={() => captureMembers(selectedHousehold.id)}
+              onRemoveMember={(pid) => removeHouseholdMember(selectedHousehold.id, pid)}
+              onAddMember={(pid) => addHouseholdMember(selectedHousehold.id, pid)}
+              onDelete={() => deleteHousehold(selectedHousehold.id)}
+              onClose={() => setSelectedId(null)}
+            />
+          )}
+
+          {selected && !selectedHousehold && !marking && (
+            <Editor
+              key={selected.id}
+              node={selected}
+              graph={graph}
+              onChange={(patch) => updateNode(selected.id, patch)}
+              onDelete={() => deleteNode(selected.id)}
+              onClose={() => setSelectedId(null)}
+              onSetKind={setLinkKind}
+              onRemoveLink={removeLink}
+              onAddEmotion={addEmotion}
+            />
+          )}
+        </div>
+      </div>
+
+      {showQuestions && (
+        <QuestionsModal onClose={() => setShowQuestions(false)} onBuild={applyAnswers} />
+      )}
+    </Ctx.Provider>
+  );
+}
