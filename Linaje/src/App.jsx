@@ -622,7 +622,12 @@ function normalize(data) {
   );
   const ids = new Set(nodes.map((n) => n.id));
   const raw = Array.isArray(data.links)
-    ? data.links.map((l) => ({ type: l.type, a: String(l.a), b: String(l.b), kind: l.kind }))
+    ? data.links.map((l) => ({
+        type: l.type,
+        a: String(l.a),
+        b: String(l.b),
+        kind: LEGACY[l.kind] ?? l.kind,
+      }))
     : fromLegacy(data.edges ?? []);
   const types = ['pareja', 'filiacion', 'emocion'];
   const links = raw
@@ -681,8 +686,6 @@ function downloadUrl(url, filename) {
 
 /* ---------- Imagen final con leyendas (para Guardar JPG) ---------- */
 
-// Dibuja sobre la imagen del genograma dos recuadros de leyenda, como en la guía:
-// símbolos básicos y leyendas de relaciones usadas. Fondo blanco.
 async function composeWithLegend(flowUrl, rows) {
   const img = await new Promise((resolve, reject) => {
     const i = new Image();
@@ -724,7 +727,6 @@ async function composeWithLegend(flowUrl, rows) {
     ctx.textAlign = 'left';
   };
 
-  // Recuadro 1: símbolos básicos
   const bx = pad;
   const by = img.height + pad;
   frame(bx, by, boxW, symH, 'Símbolos del genograma');
@@ -735,7 +737,6 @@ async function composeWithLegend(flowUrl, rows) {
   ctx.strokeStyle = '#000000';
   ctx.lineWidth = 2 * s;
 
-  // Hombre (cuadrado) y mujer (círculo) con su unión
   ctx.strokeRect(X(70), Y(70), 30 * s, 30 * s);
   ctx.beginPath();
   ctx.arc(X(290), Y(85), 15 * s, 0, Math.PI * 2);
@@ -747,7 +748,6 @@ async function composeWithLegend(flowUrl, rows) {
   ctx.lineTo(X(290), Y(100));
   ctx.stroke();
 
-  // Bajada a los hijos
   ctx.beginPath();
   ctx.moveTo(X(187), Y(125));
   ctx.lineTo(X(187), Y(145));
@@ -759,7 +759,6 @@ async function composeWithLegend(flowUrl, rows) {
   ctx.lineTo(X(230), Y(172));
   ctx.stroke();
 
-  // Hijo (cuadrado) e hija (círculo)
   ctx.strokeRect(X(142), Y(172), 16 * s, 16 * s);
   ctx.beginPath();
   ctx.arc(X(230), Y(180), 8 * s, 0, Math.PI * 2);
@@ -773,21 +772,61 @@ async function composeWithLegend(flowUrl, rows) {
   ctx.fillText('Femenino', X(230), Y(196));
   ctx.textAlign = 'left';
 
-  // Recuadro 2: leyendas de relaciones usadas
   const ry = by + symH + pad;
   frame(bx, ry, boxW, relH, 'Leyendas de relaciones familiares');
 
   rows.forEach((row, i) => {
     const ly = ry + (52 + i * 28) * s + 8 * s;
     const d = row.def;
+    const x0 = bx + 30 * s;
+    const x1 = bx + 90 * s;
+    const xm = (x0 + x1) / 2;
+
     ctx.strokeStyle = d.color;
     ctx.lineWidth = d.width * s;
     ctx.setLineDash(d.dash ? d.dash.split(' ').map((n) => Number(n) * s) : []);
     ctx.beginPath();
-    ctx.moveTo(bx + 30 * s, ly);
-    ctx.lineTo(bx + 90 * s, ly);
+    ctx.moveTo(x0, ly);
+    ctx.lineTo(x1, ly);
     ctx.stroke();
     ctx.setLineDash([]);
+
+    ctx.lineWidth = 1.5 * s;
+
+    // Casa de convivencia
+    if (d.house) {
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.moveTo(xm - 7 * s, ly + 4 * s);
+      ctx.lineTo(xm - 7 * s, ly - 1 * s);
+      ctx.lineTo(xm, ly - 8 * s);
+      ctx.lineTo(xm + 7 * s, ly - 1 * s);
+      ctx.lineTo(xm + 7 * s, ly + 4 * s);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // Barras de separación
+    const slashCount = d.slashes ?? (d.deco === 'slash' ? 1 : d.deco === 'slash2' ? 2 : 0);
+    const slashBase = d.house ? xm + 12 * s : xm;
+    for (let k = 0; k < slashCount; k++) {
+      const sx = slashBase + (k - (slashCount - 1) / 2) * 6 * s;
+      ctx.beginPath();
+      ctx.moveTo(sx - 4 * s, ly + 6 * s);
+      ctx.lineTo(sx + 4 * s, ly - 6 * s);
+      ctx.stroke();
+    }
+
+    // Viudez (X)
+    if (d.deco === 'cross') {
+      ctx.beginPath();
+      ctx.moveTo(xm - 6 * s, ly - 6 * s);
+      ctx.lineTo(xm + 6 * s, ly + 6 * s);
+      ctx.moveTo(xm + 6 * s, ly - 6 * s);
+      ctx.lineTo(xm - 6 * s, ly + 6 * s);
+      ctx.stroke();
+    }
 
     ctx.fillStyle = '#1f2937';
     ctx.font = font(13);
@@ -1038,6 +1077,7 @@ function HouseholdControls({ households, selectedId, onSelect, marking }) {
 
 /* ---------- Trazos ---------- */
 
+// Dibuja un segmento recto con su patrón, adornos y punta
 function Segment({ def, x1, y1, x2, y2 }) {
   const dx = x2 - x1;
   const dy = y2 - y1;
@@ -1121,6 +1161,27 @@ function Segment({ def, x1, y1, x2, y2 }) {
       <path key={key()} d={line(P(t - 4, -6), P(t + 4, 6))} fill="none" stroke={def.color} strokeWidth={1.5} />
     );
 
+  // Barras de separación (relaciones de pareja)
+  const slashCount = def.slashes ?? 0;
+  const slashBase = def.house ? m + 12 : m;
+  for (let i = 0; i < slashCount; i++) {
+    slashAt(slashBase + (i - (slashCount - 1) / 2) * 6);
+  }
+
+  // Casa de convivencia
+  if (def.house) {
+    const [cx, cy] = P(m);
+    parts.push(
+      <path
+        key={key()}
+        d={`M ${cx - 7} ${cy + 4} L ${cx - 7} ${cy - 1} L ${cx} ${cy - 8} L ${cx + 7} ${cy - 1} L ${cx + 7} ${cy + 4} Z`}
+        fill="#ffffff"
+        stroke={def.color}
+        strokeWidth={1.5}
+      />
+    );
+  }
+
   if (def.deco === 'slash') slashAt(m);
   if (def.deco === 'slash2') {
     slashAt(m - 3);
@@ -1154,6 +1215,69 @@ function Segment({ def, x1, y1, x2, y2 }) {
       parts.push(
         <circle key={key()} cx={cx} cy={cy} r={3.5} fill="#ffffff" stroke={def.color} strokeWidth={1.5} />
       )
+    );
+  }
+  if (def.deco === 'chain') {
+    for (let i = -2; i <= 2; i++) {
+      const [cx, cy] = P(m + i * 5);
+      parts.push(
+        <circle key={key()} cx={cx} cy={cy} r={2.6} fill="#ffffff" stroke={def.color} strokeWidth={1.2} />
+      );
+    }
+  }
+  if (def.deco === 'diamond') {
+    const [cx, cy] = P(m);
+    parts.push(
+      <path
+        key={key()}
+        d={`M ${cx} ${cy - 6} L ${cx + 5} ${cy} L ${cx} ${cy + 6} L ${cx - 5} ${cy} Z`}
+        fill="#ffffff"
+        stroke={def.color}
+        strokeWidth={1.5}
+      />
+    );
+  }
+  if (def.deco === 'xcircle') {
+    const [cx, cy] = P(m);
+    parts.push(
+      <circle key={key()} cx={cx} cy={cy} r={6} fill="#ffffff" stroke={def.color} strokeWidth={1.5} />
+    );
+    parts.push(
+      <path
+        key={key()}
+        d={`M ${cx - 4} ${cy - 4} L ${cx + 4} ${cy + 4} M ${cx + 4} ${cy - 4} L ${cx - 4} ${cy + 4}`}
+        fill="none"
+        stroke={def.color}
+        strokeWidth={1.2}
+      />
+    );
+  }
+  if (def.deco === 'question') {
+    const [cx, cy] = P(m);
+    parts.push(
+      <rect
+        key={key()}
+        x={cx - 6}
+        y={cy - 6}
+        width={12}
+        height={12}
+        fill="#ffffff"
+        stroke={def.color}
+        strokeWidth={1.2}
+      />
+    );
+    parts.push(
+      <text
+        key={key()}
+        x={cx}
+        y={cy + 4}
+        fontSize={10}
+        textAnchor="middle"
+        fill={def.color}
+        style={{ fontWeight: 700 }}
+      >
+        ?
+      </text>
     );
   }
   if (def.deco === 'box-x') {
@@ -1236,6 +1360,7 @@ function Drawings({ graph }) {
   const out = [];
   const parentLine = {};
 
+  // 1. Pareja: las bajadas son siempre negras y sólidas; la barra lleva el tipo de relación
   graph.links.forEach((l) => {
     if (l.type !== 'pareja') return;
     const A = byId[l.a];
@@ -1249,15 +1374,16 @@ function Drawings({ graph }) {
     });
     const yU = snap(Math.max(L.bottom, R.bottom) + PAIR_DROP);
     const def = PAREJA[l.kind] ?? PAREJA.matrimonio;
-    const stemDef = { ...def, deco: undefined };
+    const stem = { color: LINE.color, width: LINE.width };
 
-    out.push(<Segment key={`pl${l.id}`} def={stemDef} x1={L.cx} y1={L.bottom} x2={L.cx} y2={yU} />);
-    out.push(<Segment key={`pr${l.id}`} def={stemDef} x1={R.cx} y1={R.bottom} x2={R.cx} y2={yU} />);
+    out.push(<Segment key={`pl${l.id}`} def={stem} x1={L.cx} y1={L.bottom} x2={L.cx} y2={yU} />);
+    out.push(<Segment key={`pr${l.id}`} def={stem} x1={R.cx} y1={R.bottom} x2={R.cx} y2={yU} />);
     out.push(<Segment key={`ph${l.id}`} def={def} x1={L.cx} y1={yU} x2={R.cx} y2={yU} />);
 
     parentLine[pairKey(l.a, l.b)] = { xL: L.cx, xR: R.cx, y: yU, def };
   });
 
+  // 2. Relaciones emocionales: diagonal de individuo a individuo
   graph.links.forEach((l) => {
     if (l.type !== 'emocion') return;
     const A = byId[l.a];
@@ -1268,6 +1394,7 @@ function Drawings({ graph }) {
     out.push(<Segment key={`e${l.id}`} def={EMOCION[l.kind] ?? EMOCION.indiferente} {...s} />);
   });
 
+  // 3. Hijos: solo verticales que bajan desde la línea de los padres
   const fam = {};
   for (const l of graph.links) {
     if (l.type !== 'filiacion') continue;
@@ -1284,10 +1411,10 @@ function Drawings({ graph }) {
           : null;
 
       if (pl) {
-        fam[famKey] = { type: 'pair', xL: pl.xL, xR: pl.xR, y: pl.y, def: pl.def, children: {} };
+        fam[famKey] = { type: 'pair', xL: pl.xL, xR: pl.xR, y: pl.y, children: {} };
       } else {
         const pb = box(parents[0]);
-        fam[famKey] = { type: 'single', x: pb.cx, y: pb.bottom, def: LINE, children: {} };
+        fam[famKey] = { type: 'single', x: pb.cx, y: pb.bottom, children: {} };
       }
     }
 
@@ -1305,18 +1432,15 @@ function Drawings({ graph }) {
     const dashed = [];
 
     if (f.type === 'pair') {
+      // Extensión de la línea de los padres si algún hijo queda fuera de su largo
       const cxs = kids.map(([, c]) => c.cx);
       const xmin = Math.min(...cxs);
       const xmax = Math.max(...cxs);
       if (xmin < f.xL) {
-        out.push(
-          <Segment key={`ext1${i}${famKey}`} def={{ ...f.def, deco: undefined }} x1={xmin} y1={f.y} x2={f.xL} y2={f.y} />
-        );
+        out.push(<Segment key={`ext1${i}${famKey}`} def={LINE} x1={xmin} y1={f.y} x2={f.xL} y2={f.y} />);
       }
       if (xmax > f.xR) {
-        out.push(
-          <Segment key={`ext2${i}${famKey}`} def={{ ...f.def, deco: undefined }} x1={f.xR} y1={f.y} x2={xmax} y2={f.y} />
-        );
+        out.push(<Segment key={`ext2${i}${famKey}`} def={LINE} x1={f.xR} y1={f.y} x2={xmax} y2={f.y} />);
       }
       kids.forEach(([cid, c]) => {
         const drop = `M ${c.cx} ${f.y} L ${c.cx} ${c.top}`;
@@ -1596,8 +1720,8 @@ function Legend({ graph, onClose }) {
             <div className="legend-title">{gr.title}</div>
             {items.map(([k, d]) => (
               <div key={k} className="legend-row">
-                <svg width="44" height="14" className="glyph">
-                  <Segment def={d} x1={2} y1={7} x2={42} y2={7} />
+                <svg width="44" height="18" className="glyph">
+                  <Segment def={d} x1={2} y1={9} x2={42} y2={9} />
                 </svg>
                 <span>{d.label}</span>
               </div>
@@ -1877,7 +2001,6 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
-  // Guardar JPG: encuadra el genograma, lo captura con fondo blanco y agrega las dos leyendas
   async function saveJpg() {
     const name = (prompt('Nombre del archivo', 'genograma') || '').trim() || 'genograma';
     const flow = canvasRef.current?.querySelector('.react-flow');
@@ -1906,7 +2029,6 @@ export default function App() {
         },
       });
 
-      // Solo se listan en la leyenda las relaciones que existen en el genograma
       const used = new Set(graph.links.map((l) => l.kind));
       const rows = GROUPS.flatMap((gr) =>
         Object.entries(gr.defs)
