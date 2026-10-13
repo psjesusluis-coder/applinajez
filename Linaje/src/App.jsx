@@ -3,7 +3,7 @@ import {
 } from 'react';
 import {
   ReactFlow, Background, Controls, MiniMap, BackgroundVariant, ViewportPortal,
-  applyNodeChanges, NodeResizer,
+  applyNodeChanges, useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { PAREJA, FILIACION, EMOCION, GROUPS, ALL, LEGACY } from './relations.js';
@@ -11,13 +11,13 @@ import { PAREJA, FILIACION, EMOCION, GROUPS, ALL, LEGACY } from './relations.js'
 const STORAGE_KEY = 'linaje-genograma-v6';
 const NODE = 120;
 const HALF = 60;
-const PAIR_DROP = 30;   // bajada desde la base de cada persona hasta la línea de los padres
-const GEN_GAP = 230;    // distancia vertical entre generaciones
-const PAIR_GAP = 190;   // distancia horizontal de centro a centro en pareja
-const SIB_GAP = 170;    // distancia horizontal de centro a centro entre hijos
+const PAIR_DROP = 30;
+const GEN_GAP = 230;
+const PAIR_GAP = 190;
+const SIB_GAP = 170;
 const LINE = { color: '#000000', width: 2 };
+const HALO = 90;   // separación entre los miembros y el contorno del hogar
 
-// Fondo del cuadro del hogar, y sombreado de cada miembro
 const HOUSEHOLD_COLORS = {
   azul: { box: 'rgba(37, 99, 235, 0.10)', shade: 'rgba(37, 99, 235, 0.35)', border: '#1d4ed8' },
   verde: { box: 'rgba(16, 185, 129, 0.12)', shade: 'rgba(16, 185, 129, 0.40)', border: '#047857' },
@@ -25,7 +25,7 @@ const HOUSEHOLD_COLORS = {
   gris: { box: 'rgba(107, 114, 128, 0.12)', shade: 'rgba(107, 114, 128, 0.40)', border: '#374151' },
 };
 
-const Ctx = createContext({ act: () => {}, resizeHousehold: () => {}, shade: {} });
+const Ctx = createContext({ act: () => {}, shade: {}, editPoints: () => {} });
 
 const snap = (v) => Math.round(v);
 
@@ -37,6 +37,100 @@ const find = (list, id) => list.find((n) => n.id === id);
 const byIdMap = (nodes) => Object.fromEntries(nodes.map((n) => [n.id, n]));
 const opposite = (gender) => (gender === 'F' ? 'M' : 'F');
 const pairKey = (a, b) => [a, b].sort().join('|');
+
+/* ---------- Geometría del hogar ---------- */
+
+const rectPoints = (x, y, w, h) => [
+  { x, y },
+  { x: x + w, y },
+  { x: x + w, y: y + h },
+  { x, y: y + h },
+];
+
+// Curva suave que pasa por todos los puntos (Catmull-Rom cerrada)
+function smoothPath(pts) {
+  const n = pts.length;
+  if (n < 3) return '';
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[(i - 1 + n) % n];
+    const p1 = pts[i];
+    const p2 = pts[(i + 1) % n];
+    const p3 = pts[(i + 2) % n];
+    const c1x = p1.x + (p2.x - p0.x) / 6;
+    const c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6;
+    const c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${c1x} ${c1y} ${c2x} ${c2y} ${p2.x} ${p2.y}`;
+  }
+  return `${d} Z`;
+}
+
+function centroid(pts) {
+  return {
+    x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
+    y: pts.reduce((s, p) => s + p.y, 0) / pts.length,
+  };
+}
+
+function topLeft(pts) {
+  return {
+    minX: Math.min(...pts.map((p) => p.x)),
+    minY: Math.min(...pts.map((p) => p.y)),
+  };
+}
+
+// Casco convexo (cadena monótona)
+function convexHull(points) {
+  const p = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  if (p.length < 3) return p;
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower = [];
+  for (const q of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
+    lower.push(q);
+  }
+  const upper = [];
+  for (let i = p.length - 1; i >= 0; i--) {
+    const q = p[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
+    upper.push(q);
+  }
+  upper.pop();
+  lower.pop();
+  return lower.concat(upper);
+}
+
+// Contorno que envuelve a los miembros: círculos alrededor de cada centro y su casco
+function fitPoints(household, nodes) {
+  const members = household.members.map((id) => find(nodes, id)).filter(Boolean);
+  if (!members.length) return household.points;
+  const samples = [];
+  for (const m of members) {
+    const cx = snap(m.position.x) + HALF;
+    const cy = snap(m.position.y) + HALF;
+    for (let k = 0; k < 12; k++) {
+      const a = (2 * Math.PI * k) / 12;
+      samples.push({ x: snap(cx + HALO * Math.cos(a)), y: snap(cy + HALO * Math.sin(a)) });
+    }
+  }
+  const hull = convexHull(samples);
+  return hull.length >= 3 ? hull : household.points;
+}
+
+// Punto dentro de un polígono (regla del rayo)
+function pointInPoly(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x;
+    const yi = poly[i].y;
+    const xj = poly[j].x;
+    const yj = poly[j].y;
+    const hit = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (hit) inside = !inside;
+  }
+  return inside;
+}
 
 /* ---------- Modelo ---------- */
 
@@ -76,7 +170,6 @@ function spouseSlot(nodes, p, newGender) {
 }
 
 // Centra a los hijos de cada familia bajo el punto medio de sus padres.
-// Con onlyId, solo recalcula las familias donde esa persona es padre, madre o hijo.
 function relayoutOnce(g, onlyId) {
   const byId = byIdMap(g.nodes);
   const families = {};
@@ -133,16 +226,13 @@ function addSpouse(g, personId, newId) {
   return withLink(next, mkLink('pareja', personId, newId, 'matrimonio'));
 }
 
-// + Familia: crea una pareja nueva (hombre a la izquierda, mujer a la derecha)
-function addFamily(g) {
-  const y = 150;
-  const x = freeXDir(g.nodes, 300, y, 1);
-  const manId = uid();
-  const womanId = uid();
-  let next = withNode(g, personNode(manId, x, y, { name: 'Nuevo padre', gender: 'M' }));
-  next = withNode(next, personNode(womanId, x + PAIR_GAP, y, { name: 'Nueva madre', gender: 'F' }));
+// + Familia: un hombre y una mujer unidos por matrimonio
+function addFamily(g, manId, womanId) {
+  const x = freeXDir(g.nodes, 300, 150, 1);
+  let next = withNode(g, personNode(manId, x, 150, { name: 'Nuevo padre', gender: 'M' }));
+  next = withNode(next, personNode(womanId, x + PAIR_GAP, 150, { name: 'Nueva madre', gender: 'F' }));
   next = withLink(next, mkLink('pareja', manId, womanId, 'matrimonio'));
-  return { graph: next, selectedId: manId };
+  return relayoutAll(next);
 }
 
 function addParent(g, childId, newId) {
@@ -230,13 +320,10 @@ const SAMPLE = {
   households: [
     {
       id: 'hogar1',
-      x: 90,
-      y: 170,
-      width: 620,
-      height: 420,
       label: 'Hogar Juan y Ana',
       color: 'azul',
       members: ['padre', 'madre', 'hijo1', 'hija1', 'hijo2'],
+      points: rectPoints(90, 170, 620, 420),
     },
   ],
 };
@@ -266,16 +353,22 @@ function normalize(data) {
   const links = raw
     .filter((l) => types.includes(l.type) && ids.has(l.a) && ids.has(l.b) && ALL[l.kind])
     .map((l) => ({ id: uid(), ...l }));
-  const households = (Array.isArray(data.households) ? data.households : []).map((h) => ({
-    id: String(h.id ?? uid()),
-    x: snap(h.x ?? 0),
-    y: snap(h.y ?? 0),
-    width: snap(h.width ?? 340),
-    height: snap(h.height ?? 260),
-    label: h.label ?? 'Hogar',
-    color: HOUSEHOLD_COLORS[h.color] ? h.color : 'azul',
-    members: (h.members ?? []).map(String).filter((id) => ids.has(id)),
-  }));
+
+  // Hogares: si son de la versión anterior (rectángulo), se convierten en forma de cuatro esquinas
+  const households = (Array.isArray(data.households) ? data.households : []).map((h) => {
+    const points =
+      Array.isArray(h.points) && h.points.length >= 3
+        ? h.points.map((p) => ({ x: snap(p.x), y: snap(p.y) }))
+        : rectPoints(snap(h.x ?? 60), snap(h.y ?? 60), snap(h.width ?? 340), snap(h.height ?? 260));
+    return {
+      id: String(h.id ?? uid()),
+      label: h.label ?? 'Hogar',
+      color: HOUSEHOLD_COLORS[h.color] ? h.color : 'azul',
+      members: (h.members ?? []).map(String).filter((id) => ids.has(id)),
+      points,
+    };
+  });
+
   return relayoutAll({ nodes, links, households });
 }
 
@@ -285,13 +378,10 @@ function serialize(g) {
     links: g.links.map((l) => ({ id: l.id, type: l.type, a: l.a, b: l.b, kind: l.kind })),
     households: g.households.map((h) => ({
       id: h.id,
-      x: h.x,
-      y: h.y,
-      width: h.width,
-      height: h.height,
       label: h.label,
       color: h.color,
       members: h.members,
+      points: h.points,
     })),
   };
 }
@@ -306,7 +396,7 @@ function loadInitial() {
   return normalize(SAMPLE);
 }
 
-/* ---------- Nodos ---------- */
+/* ---------- Nodo de persona ---------- */
 
 function PersonNode({ id, data, selected }) {
   const { act, shade } = useContext(Ctx);
@@ -316,7 +406,6 @@ function PersonNode({ id, data, selected }) {
     data.gender === 'F' ? 'person--f' : 'person--m',
     selected && 'is-selected',
     data.index && 'is-index',
-    s && 'is-member',
   ]
     .filter(Boolean)
     .join(' ');
@@ -327,10 +416,7 @@ function PersonNode({ id, data, selected }) {
   };
 
   return (
-    <div
-      className={cls}
-      style={s ? { background: s.shade, borderColor: s.border } : undefined}
-    >
+    <div className={cls} style={s ? { background: s.shade, borderColor: s.border } : undefined}>
       {data.deceased && (
         <svg className="dead-line" viewBox="0 0 120 120" aria-hidden="true">
           <line x1="0" y1="120" x2="120" y2="0" stroke="#1f2937" strokeWidth="2" />
@@ -351,54 +437,195 @@ function PersonNode({ id, data, selected }) {
   );
 }
 
-// Cuadro del hogar. Sus cuadros de control son grandes para tocar en el celular.
-function HouseholdNode({ id, data, selected }) {
-  const { resizeHousehold } = useContext(Ctx);
-  const colors = HOUSEHOLD_COLORS[data.color] ?? HOUSEHOLD_COLORS.azul;
-  return (
-    <div
-      style={{
-        width: '100%',
-        height: '100%',
-        boxSizing: 'border-box',
-        background: colors.box,
-        border: '1.5px dashed #6b7280',
-        borderRadius: 12,
-        position: 'relative',
-      }}
-    >
-      <NodeResizer
-        isVisible={selected}
-        minWidth={160}
-        minHeight={120}
-        onResize={(_, p) => resizeHousehold(id, p)}
-        lineStyle={{ borderColor: '#6b7280', borderWidth: 2 }}
-        handleStyle={{
-          width: 22,
-          height: 22,
-          borderRadius: 4,
-          background: '#ffffff',
-          border: '2px solid #374151',
-        }}
+const nodeTypes = { person: PersonNode };
+
+/* ---------- Asas del hogar: se arrastran con el dedo ---------- */
+
+// Adjunta un listener nativo en fase de objetivo, para que el arrastre
+// no active el paneo del lienzo por debajo.
+function useNativeDown(ref, handler) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const fn = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      handler(e);
+    };
+    el.addEventListener('pointerdown', fn);
+    return () => el.removeEventListener('pointerdown', fn);
+  }, [ref, handler]);
+}
+
+function Grip({ kind, x, y, onDown }) {
+  const ref = useRef(null);
+  useNativeDown(ref, onDown);
+  const style = { pointerEvents: 'auto', touchAction: 'none' };
+
+  if (kind === 'square') {
+    return (
+      <rect
+        ref={ref}
+        x={x - 10}
+        y={y - 10}
+        width={20}
+        height={20}
+        rx={4}
+        fill="#ffffff"
+        stroke="#374151"
+        strokeWidth={2}
+        style={{ ...style, cursor: 'move' }}
       />
-      <div
-        style={{
-          position: 'absolute',
-          top: 6,
-          left: 10,
-          fontSize: 12,
-          fontWeight: 600,
-          color: '#374151',
-          pointerEvents: 'none',
-        }}
-      >
-        {data.label || 'Hogar'}
-      </div>
-    </div>
+    );
+  }
+  if (kind === 'mid') {
+    return (
+      <circle
+        ref={ref}
+        cx={x}
+        cy={y}
+        r={8}
+        fill="#2563eb"
+        stroke="#ffffff"
+        strokeWidth={2}
+        style={{ ...style, cursor: 'copy' }}
+      />
+    );
+  }
+  return (
+    <circle
+      ref={ref}
+      cx={x}
+      cy={y}
+      r={12}
+      fill="#374151"
+      stroke="#ffffff"
+      strokeWidth={2}
+      style={{ ...style, cursor: 'move' }}
+    />
   );
 }
 
-const nodeTypes = { person: PersonNode, household: HouseholdNode };
+/* ---------- Capa de hogares: formas libres ---------- */
+
+function HouseholdLayer({ households, selectedId, onSelect, marking }) {
+  const { screenToFlowPosition } = useReactFlow();
+  const { editPoints } = useContext(Ctx);
+
+  // mode: { type: 'vertex', idx } | { type: 'mid', idx } | { type: 'move' }
+  function beginDrag(e, hid, mode) {
+    const h = find(households, hid);
+    if (!h) return;
+    const start = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    const orig = h.points;
+    let idx = mode.idx;
+
+    if (mode.type === 'mid') {
+      const n = orig.length;
+      const a = orig[mode.idx];
+      const b = orig[(mode.idx + 1) % n];
+      const m = { x: snap((a.x + b.x) / 2), y: snap((a.y + b.y) / 2) };
+      editPoints(hid, (pts) => [...pts.slice(0, mode.idx + 1), m, ...pts.slice(mode.idx + 1)]);
+      idx = mode.idx + 1;
+    }
+
+    const move = (ev) => {
+      const p = screenToFlowPosition({ x: ev.clientX, y: ev.clientY });
+      if (mode.type === 'move') {
+        const dx = p.x - start.x;
+        const dy = p.y - start.y;
+        editPoints(hid, () => orig.map((q) => ({ x: snap(q.x + dx), y: snap(q.y + dy) })));
+      } else {
+        editPoints(hid, (pts) =>
+          pts.map((q, i) => (i === idx ? { x: snap(p.x), y: snap(p.y) } : q))
+        );
+      }
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
+  return (
+    <svg className="drawings">
+      {households.map((h) => {
+        const pts = h.points;
+        const d = smoothPath(pts);
+        const c = HOUSEHOLD_COLORS[h.color] ?? HOUSEHOLD_COLORS.azul;
+        const sel = h.id === selectedId;
+        const tl = topLeft(pts);
+        const cen = centroid(pts);
+        return (
+          <g key={h.id}>
+            <path
+              d={d}
+              fill={c.box}
+              stroke={c.border}
+              strokeWidth={sel ? 2.5 : 1.5}
+              strokeDasharray={sel ? undefined : '6 4'}
+              style={{ pointerEvents: 'none' }}
+            />
+            <path
+              d={d}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={24}
+              style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+              onClick={() => {
+                if (!marking) onSelect(h.id);
+              }}
+            />
+            <text
+              x={tl.minX + 12}
+              y={tl.minY + 20}
+              fontSize={12}
+              fontWeight={600}
+              fill="#374151"
+              style={{ pointerEvents: 'none' }}
+            >
+              {h.label}
+            </text>
+
+            {sel && !marking && (
+              <>
+                {pts.map((p, i) => {
+                  const q = pts[(i + 1) % pts.length];
+                  return (
+                    <Grip
+                      key={`m${i}`}
+                      kind="mid"
+                      x={(p.x + q.x) / 2}
+                      y={(p.y + q.y) / 2}
+                      onDown={(e) => beginDrag(e, h.id, { type: 'mid', idx: i })}
+                    />
+                  );
+                })}
+                {pts.map((p, i) => (
+                  <Grip
+                    key={`v${i}`}
+                    kind="square"
+                    x={p.x}
+                    y={p.y}
+                    onDown={(e) => beginDrag(e, h.id, { type: 'vertex', idx: i })}
+                  />
+                ))}
+                <Grip
+                  kind="move"
+                  x={cen.x}
+                  y={cen.y}
+                  onDown={(e) => beginDrag(e, h.id, { type: 'move' })}
+                />
+              </>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
 
 /* ---------- Trazos ---------- */
 
@@ -870,7 +1097,8 @@ function Editor({
 }
 
 function HouseholdEditor({
-  household, graph, onChange, onMark, onRemoveMember, onAddMember, onDelete, onClose,
+  household, graph, onChange, onMark, onFit, onRemoveCorner,
+  onCapture, onRemoveMember, onAddMember, onDelete, onClose,
 }) {
   const byId = byIdMap(graph.nodes);
   const members = household.members.map((id) => byId[id]).filter(Boolean);
@@ -900,12 +1128,14 @@ function HouseholdEditor({
       </label>
 
       <p className="hint">
-        Arrastra el cuadro para moverlo, o toca sus cuadros de las esquinas y lados para cambiar su tamaño.
+        Mueve las esquinas cuadradas para moldear la forma. Los puntos azules entre esquinas agregan una esquina nueva.
+        El punto oscuro mueve toda la forma.
       </p>
 
-      <button className="primary" onClick={onMark}>
-        Marcar miembros tocando personas
-      </button>
+      <button className="primary" onClick={onFit}>Ajustar al contorno de miembros</button>
+      <button onClick={onMark}>Marcar miembros tocando personas</button>
+      <button onClick={onCapture}>Capturar personas dentro de la forma</button>
+      <button onClick={onRemoveCorner}>Quitar última esquina</button>
 
       <div className="section-title">Miembros</div>
       {members.length === 0 && <p className="hint">Este hogar no tiene miembros todavía.</p>}
@@ -975,22 +1205,6 @@ function Legend({ graph, onClose }) {
 
 /* ---------- App ---------- */
 
-// Hogares primero (quedan detrás), luego personas
-function flowNodes(g) {
-  const households = g.households.map((h) => ({
-    id: h.id,
-    type: 'household',
-    position: { x: h.x, y: h.y },
-    width: h.width,
-    height: h.height,
-    style: { width: h.width, height: h.height },
-    zIndex: -1,
-    selected: !!h.selected,
-    data: { label: h.label, color: h.color },
-  }));
-  return [...households, ...g.nodes];
-}
-
 export default function App() {
   const [graph, setGraph] = useState(loadInitial);
   const [selectedId, setSelectedId] = useState(null);
@@ -1018,43 +1232,26 @@ export default function App() {
     return out;
   }, [graph.households]);
 
+  // Solo las personas son nodos de React Flow; los hogares se dibujan en su propia capa
   const onNodesChange = useCallback(
     (changes) =>
       setGraph((g) => {
-        const combined = applyNodeChanges(changes, flowNodes(g));
-        const hMap = byIdMap(g.households);
-        const households = combined
-          .filter((n) => n.type === 'household' && hMap[n.id])
-          .map((n) => ({
-            ...hMap[n.id],
-            x: snap(n.position.x),
-            y: snap(n.position.y),
-          }));
-        const nodes = combined.filter((n) => n.type !== 'household');
+        const nodes = applyNodeChanges(changes, g.nodes);
         const ids = new Set(nodes.map((n) => n.id));
-        return {
-          ...g,
-          nodes,
-          households,
-          links: g.links.filter((l) => ids.has(l.a) && ids.has(l.b)),
-        };
+        return { ...g, nodes, links: g.links.filter((l) => ids.has(l.a) && ids.has(l.b)) };
       }),
     []
   );
 
   const onNodeDragStop = useCallback((_, node) => {
-    if (node.type === 'household') return;
     setGraph((g) => relayoutAll(g, node.id));
   }, []);
 
-  const resizeHousehold = useCallback((id, p) => {
+  // Cambia los puntos de un hogar (arrastre de esquinas, puntos y forma completa)
+  const editPoints = useCallback((id, fn) => {
     setGraph((g) => ({
       ...g,
-      households: g.households.map((h) =>
-        h.id === id
-          ? { ...h, x: snap(p.x), y: snap(p.y), width: snap(p.width), height: snap(p.height) }
-          : h
-      ),
+      households: g.households.map((h) => (h.id === id ? { ...h, points: fn(h.points) } : h)),
     }));
   }, []);
 
@@ -1062,15 +1259,14 @@ export default function App() {
     const newId = uid();
     setGraph((g) => relayoutAll(ACTIONS[type](g, id, newId)));
   }, []);
-  const ctx = useMemo(() => ({ act, resizeHousehold, shade }), [act, resizeHousehold, shade]);
+  const ctx = useMemo(() => ({ act, shade, editPoints }), [act, shade, editPoints]);
 
   const selected = find(graph.nodes, selectedId);
   const selectedHousehold = find(graph.households, selectedId);
 
-  // Toque en una persona: en modo de marcado la agrega o quita del hogar; si no, la selecciona
   const onNodeClick = useCallback(
     (_, n) => {
-      if (marking && n.type === 'person') {
+      if (marking) {
         setGraph((g) => ({
           ...g,
           households: g.households.map((h) => {
@@ -1089,6 +1285,10 @@ export default function App() {
     [marking]
   );
 
+  function selectHousehold(id) {
+    if (!marking) setSelectedId(id);
+  }
+
   function startMarking() {
     if (!selectedHousehold) return;
     setMarking(selectedHousehold.id);
@@ -1105,33 +1305,26 @@ export default function App() {
     setSelectedId(id);
   }
 
-  // + Familia: crea una pareja y la deja seleccionada para agregar hijos
   function addFamilyUnit() {
-    let selectedNew = null;
-    setGraph((g) => {
-      const { graph: next, selectedId: sid } = addFamily(g);
-      selectedNew = sid;
-      return relayoutAll(next);
-    });
-    // selectedNew se fija dentro del mismo ciclo de actualización
-    setTimeout(() => setSelectedId(selectedNew), 0);
+    const manId = uid();
+    const womanId = uid();
+    setGraph((g) => addFamily(g, manId, womanId));
+    setSelectedId(manId);
   }
 
   function addHousehold() {
     const id = uid();
+    const off = 60 + graph.households.length * 30;
     setGraph((g) => ({
       ...g,
       households: [
         ...g.households,
         {
           id,
-          x: 60 + g.households.length * 30,
-          y: 60 + g.households.length * 30,
-          width: 340,
-          height: 260,
           label: 'Hogar',
           color: 'azul',
           members: [],
+          points: rectPoints(off, off, 340, 260),
         },
       ],
     }));
@@ -1177,6 +1370,36 @@ export default function App() {
       ...g,
       households: g.households.map((h) => (h.id === id ? { ...h, ...patch } : h)),
     }));
+  }
+
+  function fitHousehold(id) {
+    setGraph((g) => ({
+      ...g,
+      households: g.households.map((h) => (h.id === id ? { ...h, points: fitPoints(h, g.nodes) } : h)),
+    }));
+  }
+
+  function removeCorner(id) {
+    setGraph((g) => ({
+      ...g,
+      households: g.households.map((h) =>
+        h.id === id && h.points.length > 3 ? { ...h, points: h.points.slice(0, -1) } : h
+      ),
+    }));
+  }
+
+  function captureMembers(id) {
+    setGraph((g) => {
+      const h = find(g.households, id);
+      if (!h) return g;
+      const inside = g.nodes
+        .filter((n) => pointInPoly(snap(n.position.x) + HALF, snap(n.position.y) + HALF, h.points))
+        .map((n) => n.id);
+      return {
+        ...g,
+        households: g.households.map((x) => (x.id === id ? { ...x, members: inside } : x)),
+      };
+    });
   }
 
   function removeHouseholdMember(hid, pid) {
@@ -1284,7 +1507,7 @@ export default function App() {
         <div className="body">
           <div className="canvas">
             <ReactFlow
-              nodes={flowNodes(graph)}
+              nodes={graph.nodes}
               edges={[]}
               onNodesChange={onNodesChange}
               onNodeDragStop={onNodeDragStop}
@@ -1299,6 +1522,12 @@ export default function App() {
               <Controls />
               <MiniMap pannable zoomable />
               <ViewportPortal>
+                <HouseholdLayer
+                  households={graph.households}
+                  selectedId={selectedId}
+                  onSelect={selectHousehold}
+                  marking={marking}
+                />
                 <Drawings graph={graph} />
               </ViewportPortal>
             </ReactFlow>
@@ -1312,6 +1541,9 @@ export default function App() {
               graph={graph}
               onChange={(patch) => updateHousehold(selectedHousehold.id, patch)}
               onMark={startMarking}
+              onFit={() => fitHousehold(selectedHousehold.id)}
+              onRemoveCorner={() => removeCorner(selectedHousehold.id)}
+              onCapture={() => captureMembers(selectedHousehold.id)}
               onRemoveMember={(pid) => removeHouseholdMember(selectedHousehold.id, pid)}
               onAddMember={(pid) => addHouseholdMember(selectedHousehold.id, pid)}
               onDelete={() => deleteHousehold(selectedHousehold.id)}
