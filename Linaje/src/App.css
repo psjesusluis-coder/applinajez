@@ -1,87 +1,17 @@
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  color: #1f2937;
-}
-
-.app { height: 100vh; display: flex; flex-direction: column; }
-
-/* Barra superior */
-.topbar {
-  min-height: 60px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 8px 20px;
-  background: #fff;
-  border-bottom: 1px solid #e7e5e4;
-  flex-wrap: wrap;
-}
-.topbar h1 { font-family: Georgia, serif; font-size: 22px; margin: 0; }
-.toolbar { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.toolbar button, .editor button, .legend button {
-  font: inherit;
-  font-size: 13px;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid #d6d3d1;
-  background: #fff;
-  cursor: pointer;
-}
-.toolbar button:hover, .editor button:hover, .legend button:hover { background: #f5f5f4; }
-.toolbar .ghost, .editor .ghost, .legend .ghost {
-  background: transparent;
-  border: none;
-  color: #57534e;
-  padding: 2px 6px;
-}
-.primary { background: #2563eb !important; color: #fff !important; border-color: #2563eb !important; }
-.primary:hover { background: #1d4ed8 !important; }
-.primary:disabled { opacity: 0.5; cursor: default; }
-
-/* Cuerpo */
-.body { flex: 1; display: flex; min-height: 0; }
-.canvas { position: relative; flex: 1; background: #fafaf9; }
-
-/* Personas: caja fija de 120 x 120 */
-.person {
-  position: relative;
-  width: 120px;
-  height: 120px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 0 6px;
-  text-align: center;
-  font-size: 12px;
-  border: 2px solid;
-}
-.person--m { border-color: #2563eb; background: #eff6ff; border-radius: 4px; }
-.person--f { border-color: #db2777; background: #fdf2f8; border-radius: 50%; }
-.person.is-selected { box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35); }
-.person.is-index { box-shadow: 0 0 0 3px #ffffff, 0 0 0 4px #1f2937; }
-.person.is-index.is-selected {
-  box-shadow: 0 0 0 3px #ffffff, 0 0 0 4px #1f2937, 0 0 0 7px rgba(37, 99, 235, 0.35);
-}
-.person-name { font-weight: 600; font-size: 12px; word-break: break-word; }
-.person-year { font-size: 10px; color: #6b7280; margin-top: 2px; }
-
-/* Fallecido: diagonal de esquina inferior izquierda a superior derecha */
-.dead-line {
+/* Relleno de los hogares: va detrás de las personas */
+.hh-back {
   position: absolute;
-  left: -2px;
-  top: -2px;
-  width: 120px;
-  height: 120px;
-  pointer-events: none;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
   overflow: visible;
+  z-index: -1;
+  pointer-events: none;
 }
 
-/* Capa de trazos: se mueve y escala con el canvas */
-.drawings {
+/* Controles de los hogares: van encima, solo visibles al seleccionar */
+.hh-front {
   position: absolute;
   left: 0;
   top: 0;
@@ -89,107 +19,4 @@ body {
   height: 1px;
   overflow: visible;
   pointer-events: none;
-}
-
-/* Botones alrededor de la persona seleccionada */
-.quick {
-  position: absolute;
-  z-index: 10;
-  font-size: 10px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  border: 1px solid #2563eb;
-  background: #fff;
-  color: #2563eb;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.quick:hover { background: #2563eb; color: #fff; }
-.q-top { top: -30px; left: 50%; transform: translateX(-50%); }
-.q-bottom { bottom: -30px; left: 50%; transform: translateX(-50%); }
-.q-right { right: -104px; top: 50%; transform: translateY(-50%); }
-.q-left { left: -104px; top: 50%; transform: translateY(-50%); }
-
-/* Leyenda */
-.legend {
-  position: absolute;
-  bottom: 16px;
-  left: 16px;
-  z-index: 5;
-  width: 270px;
-  max-height: 55%;
-  overflow-y: auto;
-  background: #fff;
-  padding: 12px 14px;
-  border-radius: 8px;
-  border: 1px solid #e7e5e4;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
-  font-size: 11px;
-}
-.legend-title { font-weight: 600; margin: 8px 0 4px; color: #57534e; }
-.legend-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
-.glyph { flex-shrink: 0; overflow: visible; }
-
-/* Panel lateral */
-.editor {
-  width: 300px;
-  background: #fff;
-  border-left: 1px solid #e7e5e4;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  overflow-y: auto;
-}
-.editor-head { display: flex; justify-content: space-between; align-items: center; }
-.editor label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #57534e; }
-.editor label.check { flex-direction: row; align-items: center; gap: 8px; }
-.editor input, .editor select {
-  font: inherit;
-  padding: 8px;
-  border: 1px solid #d6d3d1;
-  border-radius: 6px;
-  color: #1f2937;
-  background: #fff;
-}
-.section-title { font-size: 12px; font-weight: 600; color: #57534e; margin-top: 4px; }
-.rel-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid #e7e5e4;
-  border-radius: 6px;
-}
-.rel-info { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
-.rel-info small { color: #78716c; font-size: 12px; }
-.rel-info select { font-size: 12px; padding: 4px; }
-.add-rel { display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }
-.hint { font-size: 12px; color: #78716c; margin: 0; }
-.danger {
-  margin-top: auto;
-  padding: 8px;
-  border: 1px solid #fca5a5 !important;
-  background: #fff !important;
-  color: #b91c1c !important;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.danger:hover { background: #fef2f2 !important; }
-
-@media (max-width: 720px) {
-  .editor {
-    position: absolute;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    width: auto;
-    max-height: 50%;
-    border-left: none;
-    border-top: 1px solid #e7e5e4;
-  }
-  .legend { display: none; }
-  .q-right { right: -96px; }
-  .q-left { left: -96px; }
 }
