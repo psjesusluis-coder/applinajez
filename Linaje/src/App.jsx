@@ -12,13 +12,12 @@ const NODE = 120;
 const HALF = 60;
 const PAIR_DROP = 30;   // bajada desde la base de cada persona hasta la barra de pareja
 const BUS_GAP = 40;     // distancia desde la barra de pareja hasta la barra de hermanos
-const GEN_GAP = 230;    // distancia vertical entre generaciones (deja 40 px de bajada a cada hijo)
+const GEN_GAP = 230;    // distancia vertical entre generaciones
 const PAIR_GAP = 190;   // distancia horizontal de centro a centro en pareja
 const SIB_GAP = 170;    // distancia horizontal de centro a centro entre hermanos
-const LINE = { color: '#000000', width: 2 };   // mismo grosor para toda la estructura
+const LINE = { color: '#000000', width: 2 };
 const Ctx = createContext({ act: () => {} });
 
-// Todas las coordenadas de la estructura se llevan a píxeles enteros.
 const snap = (v) => Math.round(v);
 
 const uid = () =>
@@ -56,22 +55,20 @@ const spouseLinked = (g, a, b) =>
 const overlaps = (nodes, x, y) =>
   nodes.some((n) => Math.abs(n.position.x - x) < 150 && Math.abs(n.position.y - y) < 100);
 
-// Busca un lugar libre en la misma fila, avanzando en la dirección indicada (+1 o -1)
 const freeXDir = (nodes, x, y, dir) => {
   let nx = x;
   while (overlaps(nodes, nx, y)) nx += 170 * dir;
   return nx;
 };
 
-// Lugar para una pareja nueva: el esposo siempre queda a la izquierda, la esposa a la derecha
 function spouseSlot(nodes, p, newGender) {
   const dir = newGender === 'M' ? -1 : 1;
   return freeXDir(nodes, p.position.x + dir * PAIR_GAP, p.position.y, dir);
 }
 
 // Centra a los hijos de cada familia bajo el punto medio de sus padres.
-// Se usa al crear, quitar o cambiar relaciones; no al arrastrar.
-function relayoutAll(g) {
+// Si se pasa onlyParentId, solo recentra las familias en las que esa persona es padre o madre.
+function relayoutAll(g, onlyParentId = null) {
   const byId = byIdMap(g.nodes);
   const families = {};
 
@@ -88,9 +85,10 @@ function relayoutAll(g) {
 
   const pos = {};
   for (const fam of Object.values(families)) {
-    const parents = fam.parents;
-    const midCx = parents.reduce((s, p) => s + p.position.x + HALF, 0) / parents.length;
-    const y = Math.max(...parents.map((p) => p.position.y)) + GEN_GAP;
+    if (onlyParentId && !fam.parents.some((p) => p.id === onlyParentId)) continue;
+
+    const midCx = fam.parents.reduce((s, p) => s + p.position.x + HALF, 0) / fam.parents.length;
+    const y = Math.max(...fam.parents.map((p) => p.position.y)) + GEN_GAP;
     const kids = [...fam.children]
       .map((id) => byId[id])
       .sort((a, b) => a.position.x - b.position.x);
@@ -108,7 +106,6 @@ function relayoutAll(g) {
 
 /* ---------- Acciones de los botones ---------- */
 
-// + Pareja: el esposo a la izquierda, la esposa a la derecha, a la misma altura
 function addSpouse(g, personId, newId) {
   const p = find(g.nodes, personId);
   const gender = opposite(p.data.gender);
@@ -117,9 +114,6 @@ function addSpouse(g, personId, newId) {
   return withLink(next, mkLink('pareja', personId, newId, 'matrimonio'));
 }
 
-// + Padre/Madre
-// - Si el hijo tiene un padre, el nuevo es su pareja del sexo opuesto.
-// - Si no tiene padres, se crean los dos (un padre y su pareja).
 function addParent(g, childId, newId) {
   const parents = parentIds(g, childId).map((id) => find(g.nodes, id)).filter(Boolean);
   if (parents.length >= 2) return g;
@@ -138,7 +132,6 @@ function addParent(g, childId, newId) {
   return withLink(next, mkLink('filiacion', sp, childId, 'biologico'));
 }
 
-// Agrega un hijo a los padres indicados. Si solo hay un padre, crea su pareja del sexo opuesto.
 function addChildWithParents(g, parents, newId, name) {
   let base = g;
   const pids = [...parents];
@@ -159,12 +152,10 @@ function addChildWithParents(g, parents, newId, name) {
   return next;
 }
 
-// + Hijo/a
 function addChild(g, parentId, newId) {
   return addChildWithParents(g, [parentId], newId, 'Nuevo hijo/a');
 }
 
-// + Hermano/a: mismos padres, centrado con los demás hermanos
 function addSibling(g, personId, newId) {
   let base = g;
   let parents = parentIds(g, personId);
@@ -207,7 +198,6 @@ const SAMPLE = {
   ],
 };
 
-// Convierte el formato de versiones anteriores (edges) a links
 function fromLegacy(edges) {
   const out = [];
   for (const e of edges) {
@@ -297,7 +287,6 @@ const nodeTypes = { person: PersonNode };
 
 /* ---------- Trazos ---------- */
 
-// Dibuja un segmento recto con su patrón, adorno y punta
 function Segment({ def, x1, y1, x2, y2 }) {
   const dx = x2 - x1;
   const dy = y2 - y1;
@@ -457,7 +446,6 @@ function Segment({ def, x1, y1, x2, y2 }) {
   return <g>{parts}</g>;
 }
 
-// Punto de salida y llegada en el borde de la figura, para relaciones emocionales
 function clipBetween(A, B) {
   const dx = B.cx - A.cx;
   const dy = B.cy - A.cy;
@@ -480,7 +468,6 @@ function clipBetween(A, B) {
 
 function Drawings({ graph }) {
   const byId = byIdMap(graph.nodes);
-  // Todas las medidas de la estructura salen de aquí, ya en enteros
   const box = (n) => {
     const x = snap(n.position.x);
     const y = snap(n.position.y);
@@ -496,10 +483,9 @@ function Drawings({ graph }) {
     };
   };
   const out = [];
-  const pairPoint = {}; // pairKey -> punto medio de la barra de pareja (enteros)
+  const pairPoint = {};
 
-  // 1. Pareja: cada persona baja desde su base, la barra horizontal une a los dos.
-  //    El esposo a la izquierda, la esposa a la derecha.
+  // 1. Pareja: cada persona baja desde su base y la barra horizontal une a los dos.
   graph.links.forEach((l) => {
     if (l.type !== 'pareja') return;
     const A = byId[l.a];
@@ -533,10 +519,8 @@ function Drawings({ graph }) {
     out.push(<Segment key={`e${l.id}`} def={EMOCION[l.kind] ?? EMOCION.indiferente} {...s} />);
   });
 
-  // 3. Filiación. Agrupa a los hijos por familia.
-  //    Cada familia es UN solo trazo: tronco desde el punto medio de la pareja,
-  //    barra de hermanos y bajada corta a cada hijo. Los adoptados o sustitutos
-  //    se dibujan con su trazo punteado.
+  // 3. Filiación: una familia = un trazo. Tronco desde el punto medio de la pareja,
+  //    barra de hermanos y bajada corta a cada hijo. Los adoptados o sustitutos van punteados.
   const fam = {};
   for (const l of graph.links) {
     if (l.type !== 'filiacion') continue;
@@ -580,15 +564,14 @@ function Drawings({ graph }) {
     const solid = kids.filter(([, c]) => !FILIACION[c.kind]?.dash);
     const dashed = kids.filter(([, c]) => FILIACION[c.kind]?.dash);
 
-    // Trazo continuo: tronco, barra de hermanos y bajadas de los hijos biológicos
+    // Barra de hermanos: solo cubre a los hijos; el tronco entra en ella por su punto medio
     const d = [`M ${x} ${y} L ${x} ${busY}`];
-    const xs = [x, ...solid.map(([, c]) => c.cx)];
-    const xmin = Math.min(...xs);
-    const xmax = Math.max(...xs);
-    if (xmax - xmin > 0) d.push(`M ${xmin} ${busY} L ${xmax} ${busY}`);
-    solid.forEach(([, c]) => d.push(`M ${c.cx} ${busY} L ${c.cx} ${c.top}`));
-
     if (solid.length) {
+      const cxs = solid.map(([, c]) => c.cx);
+      const xmin = Math.min(...cxs, x);
+      const xmax = Math.max(...cxs, x);
+      if (xmax - xmin > 0) d.push(`M ${xmin} ${busY} L ${xmax} ${busY}`);
+      solid.forEach(([, c]) => d.push(`M ${c.cx} ${busY} L ${c.cx} ${c.top}`));
       out.push(
         <path
           key={`fam${i}${famKey}`}
@@ -603,7 +586,6 @@ function Drawings({ graph }) {
       );
     }
 
-    // Hijos adoptados o sustitutos: trazo punteado, con el mismo recorrido
     dashed.forEach(([cid, c]) => {
       const dd = `M ${x} ${y} L ${x} ${busY} L ${c.cx} ${busY} L ${c.cx} ${c.top}`;
       out.push(
@@ -798,7 +780,7 @@ export default function App() {
     }
   }, [graph]);
 
-  // Movimiento libre: solo se actualiza la posición que arrastra el usuario
+  // Movimiento libre mientras se arrastra
   const onNodesChange = useCallback(
     (changes) =>
       setGraph((g) => {
@@ -809,7 +791,15 @@ export default function App() {
     []
   );
 
-  // Cada acción se sigue de un recentrado de todas las familias
+  // Al soltar a un padre o madre, sus hijos se recentran bajo la pareja.
+  // Al soltar a un hijo, no se mueve: queda donde lo dejaste.
+  const onNodeDragStop = useCallback((_, node) => {
+    setGraph((g) => {
+      const isParent = g.links.some((l) => l.type === 'filiacion' && l.a === node.id);
+      return isParent ? relayoutAll(g, node.id) : g;
+    });
+  }, []);
+
   const act = useCallback((type, id) => {
     const newId = uid();
     setGraph((g) => relayoutAll(ACTIONS[type](g, id, newId)));
@@ -922,6 +912,7 @@ export default function App() {
               nodes={graph.nodes}
               edges={[]}
               onNodesChange={onNodesChange}
+              onNodeDragStop={onNodeDragStop}
               nodesConnectable={false}
               nodeTypes={nodeTypes}
               onNodeClick={(_, n) => setSelectedId(n.id)}
