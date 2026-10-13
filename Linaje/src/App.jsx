@@ -10,8 +10,7 @@ import { PAREJA, FILIACION, EMOCION, GROUPS, ALL, LEGACY } from './relations.js'
 const STORAGE_KEY = 'linaje-genograma-v6';
 const NODE = 120;
 const HALF = 60;
-const PAIR_DROP = 30;   // bajada desde la base de cada persona hasta la barra de pareja
-const BUS_GAP = 40;     // distancia desde la barra de pareja hasta la barra de hermanos
+const PAIR_DROP = 30;   // bajada desde la base de cada persona hasta la línea de los padres
 const GEN_GAP = 230;    // distancia vertical entre generaciones
 const PAIR_GAP = 190;   // distancia horizontal de centro a centro en pareja
 const SIB_GAP = 170;    // distancia horizontal de centro a centro entre hermanos
@@ -67,8 +66,8 @@ function spouseSlot(nodes, p, newGender) {
 }
 
 // Centra a los hijos de cada familia bajo el punto medio de sus padres.
-// Si se pasa onlyParentId, solo recentra las familias en las que esa persona es padre o madre.
-function relayoutAll(g, onlyParentId = null) {
+// Con onlyId, solo recalcula las familias donde esa persona es padre, madre o hijo.
+function relayoutOnce(g, onlyId) {
   const byId = byIdMap(g.nodes);
   const families = {};
 
@@ -85,16 +84,19 @@ function relayoutAll(g, onlyParentId = null) {
 
   const pos = {};
   for (const fam of Object.values(families)) {
-    if (onlyParentId && !fam.parents.some((p) => p.id === onlyParentId)) continue;
+    if (onlyId && !fam.parents.some((p) => p.id === onlyId) && !fam.children.has(onlyId)) continue;
 
-    const midCx = fam.parents.reduce((s, p) => s + p.position.x + HALF, 0) / fam.parents.length;
-    const y = Math.max(...fam.parents.map((p) => p.position.y)) + GEN_GAP;
+    const centers = fam.parents.map((p) => snap(p.position.x) + HALF);
+    const cx = snap(centers.reduce((s, c) => s + c, 0) / centers.length);
+    const y = snap(Math.max(...fam.parents.map((p) => snap(p.position.y)))) + GEN_GAP;
+
     const kids = [...fam.children]
       .map((id) => byId[id])
       .sort((a, b) => a.position.x - b.position.x);
     const n = kids.length;
     kids.forEach((kid, i) => {
-      pos[kid.id] = { x: Math.round(midCx - HALF + (i - (n - 1) / 2) * SIB_GAP), y: Math.round(y) };
+      const centerX = cx + (i - (n - 1) / 2) * SIB_GAP;
+      pos[kid.id] = { x: snap(centerX - HALF), y };
     });
   }
 
@@ -102,6 +104,13 @@ function relayoutAll(g, onlyParentId = null) {
     ...g,
     nodes: g.nodes.map((n) => (pos[n.id] ? { ...n, position: pos[n.id] } : n)),
   };
+}
+
+function relayoutAll(g, onlyId = null) {
+  let cur = relayoutOnce(g, onlyId);
+  cur = relayoutOnce(cur, null);
+  cur = relayoutOnce(cur, null);
+  return cur;
 }
 
 /* ---------- Acciones de los botones ---------- */
@@ -483,7 +492,7 @@ function Drawings({ graph }) {
     };
   };
   const out = [];
-  const pairPoint = {};
+  const pairLine = {}; // pairKey -> línea horizontal de los padres { xL, xR, y }
 
   // 1. Pareja: cada persona baja desde su base y la barra horizontal une a los dos.
   graph.links.forEach((l) => {
@@ -505,7 +514,7 @@ function Drawings({ graph }) {
     out.push(<Segment key={`pr${l.id}`} def={stemDef} x1={R.cx} y1={R.bottom} x2={R.cx} y2={yU} />);
     out.push(<Segment key={`ph${l.id}`} def={def} x1={L.cx} y1={yU} x2={R.cx} y2={yU} />);
 
-    pairPoint[pairKey(l.a, l.b)] = { x: snap((L.cx + R.cx) / 2), y: yU };
+    pairLine[pairKey(l.a, l.b)] = { xL: L.cx, xR: R.cx, y: yU };
   });
 
   // 2. Relaciones emocionales: diagonal de individuo a individuo
@@ -519,8 +528,9 @@ function Drawings({ graph }) {
     out.push(<Segment key={`e${l.id}`} def={EMOCION[l.kind] ?? EMOCION.indiferente} {...s} />);
   });
 
-  // 3. Filiación: una familia = un trazo. Tronco desde el punto medio de la pareja,
-  //    barra de hermanos y bajada corta a cada hijo. Los adoptados o sustitutos van punteados.
+  // 3. Filiación. Los hijos bajan directamente de la línea de los padres.
+  //    No existe barra de hermanos: si un hijo queda fuera del largo de la pareja,
+  //    la misma línea de los padres se extiende hasta él.
   const fam = {};
   for (const l of graph.links) {
     if (l.type !== 'filiacion') continue;
@@ -531,21 +541,22 @@ function Drawings({ graph }) {
 
     const famKey = parents.map((p) => p.id).sort().join('|');
     if (!fam[famKey]) {
-      let anchor;
       if (parents.length === 2 && spouseLinked(graph, parents[0].id, parents[1].id)) {
-        anchor = pairPoint[pairKey(parents[0].id, parents[1].id)];
-      } else if (parents.length === 1) {
+        const pl = pairLine[pairKey(parents[0].id, parents[1].id)];
+        if (pl) {
+          fam[famKey] = { type: 'pair', xL: pl.xL, xR: pl.xR, yLine: pl.y, children: {} };
+        }
+      }
+      if (!fam[famKey]) {
         const pb = box(parents[0]);
-        anchor = { x: pb.cx, y: pb.bottom };
-      } else {
-        const bs = parents.map(box);
-        anchor = {
-          x: snap(bs.reduce((s, b) => s + b.cx, 0) / bs.length),
-          y: Math.max(...bs.map((b) => b.bottom)),
+        fam[famKey] = {
+          type: 'single',
+          startX: pb.cx,
+          startY: pb.bottom,
+          yLine: pb.bottom + PAIR_DROP,
+          children: {},
         };
       }
-      if (!anchor) continue;
-      fam[famKey] = { anchor, children: {} };
     }
 
     if (!fam[famKey].children[child.id]) {
@@ -557,25 +568,40 @@ function Drawings({ graph }) {
   Object.entries(fam).forEach(([famKey, f], i) => {
     const kids = Object.entries(f.children);
     if (!kids.length) return;
-    const x = snap(f.anchor.x);
-    const y = snap(f.anchor.y);
-    const busY = snap(y + BUS_GAP);
 
-    const solid = kids.filter(([, c]) => !FILIACION[c.kind]?.dash);
-    const dashed = kids.filter(([, c]) => FILIACION[c.kind]?.dash);
+    const yLine = f.yLine;
+    const cxs = kids.map(([, c]) => c.cx);
+    const solid = [];
+    const dashed = [];
 
-    // Barra de hermanos: solo cubre a los hijos; el tronco entra en ella por su punto medio
-    const d = [`M ${x} ${y} L ${x} ${busY}`];
+    if (f.type === 'pair') {
+      // La línea de la pareja ya existe entre xL y xR; solo se dibujan las partes que salen de ella
+      const xmin = Math.min(...cxs);
+      const xmax = Math.max(...cxs);
+      if (xmin < f.xL) solid.push(`M ${xmin} ${yLine} L ${f.xL} ${yLine}`);
+      if (xmax > f.xR) solid.push(`M ${f.xR} ${yLine} L ${xmax} ${yLine}`);
+    } else {
+      // Padre o madre único: su bajada llega a la línea y de ahí salen los hijos
+      solid.push(`M ${f.startX} ${f.startY} L ${f.startX} ${yLine}`);
+      const xmin = Math.min(...cxs, f.startX);
+      const xmax = Math.max(...cxs, f.startX);
+      if (xmax > xmin) solid.push(`M ${xmin} ${yLine} L ${xmax} ${yLine}`);
+    }
+
+    kids.forEach(([cid, c]) => {
+      const drop = `M ${c.cx} ${yLine} L ${c.cx} ${c.top}`;
+      if (FILIACION[c.kind]?.dash) {
+        dashed.push({ cid, drop, dash: FILIACION[c.kind].dash });
+      } else {
+        solid.push(drop);
+      }
+    });
+
     if (solid.length) {
-      const cxs = solid.map(([, c]) => c.cx);
-      const xmin = Math.min(...cxs, x);
-      const xmax = Math.max(...cxs, x);
-      if (xmax - xmin > 0) d.push(`M ${xmin} ${busY} L ${xmax} ${busY}`);
-      solid.forEach(([, c]) => d.push(`M ${c.cx} ${busY} L ${c.cx} ${c.top}`));
       out.push(
         <path
           key={`fam${i}${famKey}`}
-          d={d.join(' ')}
+          d={solid.join(' ')}
           fill="none"
           stroke={LINE.color}
           strokeWidth={LINE.width}
@@ -586,21 +612,19 @@ function Drawings({ graph }) {
       );
     }
 
-    dashed.forEach(([cid, c]) => {
-      const dd = `M ${x} ${y} L ${x} ${busY} L ${c.cx} ${busY} L ${c.cx} ${c.top}`;
+    dashed.forEach(({ cid, drop, dash }) =>
       out.push(
         <path
           key={`fd${i}${famKey}${cid}`}
-          d={dd}
+          d={drop}
           fill="none"
           stroke={LINE.color}
           strokeWidth={LINE.width}
-          strokeDasharray={FILIACION[c.kind].dash}
-          strokeLinejoin="miter"
+          strokeDasharray={dash}
           shapeRendering="crispEdges"
         />
-      );
-    });
+      )
+    );
   });
 
   return (
@@ -780,7 +804,7 @@ export default function App() {
     }
   }, [graph]);
 
-  // Movimiento libre mientras se arrastra
+  // Mientras se arrastra, la persona se mueve libremente
   const onNodesChange = useCallback(
     (changes) =>
       setGraph((g) => {
@@ -791,13 +815,9 @@ export default function App() {
     []
   );
 
-  // Al soltar a un padre o madre, sus hijos se recentran bajo la pareja.
-  // Al soltar a un hijo, no se mueve: queda donde lo dejaste.
+  // Al soltar a cualquier persona de la familia, la familia se recentra bajo sus padres
   const onNodeDragStop = useCallback((_, node) => {
-    setGraph((g) => {
-      const isParent = g.links.some((l) => l.type === 'filiacion' && l.a === node.id);
-      return isParent ? relayoutAll(g, node.id) : g;
-    });
+    setGraph((g) => relayoutAll(g, node.id));
   }, []);
 
   const act = useCallback((type, id) => {
