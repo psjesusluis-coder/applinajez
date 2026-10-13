@@ -19,9 +19,9 @@ const LINE = { color: '#000000', width: 2 };
 const HALO = 90;   // separación entre los miembros y el contorno del hogar
 
 const HOUSEHOLD_COLORS = {
-  azul: { box: 'rgba(37, 99, 235, 0.10)', shade: 'rgba(37, 99, 235, 0.35)', border: '#1d4ed8' },
-  verde: { box: 'rgba(16, 185, 129, 0.12)', shade: 'rgba(16, 185, 129, 0.40)', border: '#047857' },
-  ambar: { box: 'rgba(245, 158, 11, 0.14)', shade: 'rgba(245, 158, 11, 0.40)', border: '#b45309' },
+  azul: { box: 'rgba(37, 99, 235, 0.12)', shade: 'rgba(37, 99, 235, 0.35)', border: '#1d4ed8' },
+  verde: { box: 'rgba(16, 185, 129, 0.14)', shade: 'rgba(16, 185, 129, 0.40)', border: '#047857' },
+  ambar: { box: 'rgba(245, 158, 11, 0.16)', shade: 'rgba(245, 158, 11, 0.40)', border: '#b45309' },
   gris: { box: 'rgba(107, 114, 128, 0.12)', shade: 'rgba(107, 114, 128, 0.40)', border: '#374151' },
 };
 
@@ -354,7 +354,6 @@ function normalize(data) {
     .filter((l) => types.includes(l.type) && ids.has(l.a) && ids.has(l.b) && ALL[l.kind])
     .map((l) => ({ id: uid(), ...l }));
 
-  // Hogares: si son de la versión anterior (rectángulo), se convierten en forma de cuatro esquinas
   const households = (Array.isArray(data.households) ? data.households : []).map((h) => {
     const points =
       Array.isArray(h.points) && h.points.length >= 3
@@ -441,8 +440,7 @@ const nodeTypes = { person: PersonNode };
 
 /* ---------- Asas del hogar: se arrastran con el dedo ---------- */
 
-// Adjunta un listener nativo en fase de objetivo, para que el arrastre
-// no active el paneo del lienzo por debajo.
+// Adjunta un listener nativo para que el arrastre no mueva el lienzo por debajo.
 function useNativeDown(ref, handler) {
   useEffect(() => {
     const el = ref.current;
@@ -506,8 +504,10 @@ function Grip({ kind, x, y, onDown }) {
   );
 }
 
-/* ---------- Capa de hogares: formas libres ---------- */
+/* ---------- Hogares: forma libre ---------- */
 
+// Dos capas: el relleno va detrás de las personas (hh-back);
+// los controles van encima para poder tocarlos (hh-front).
 function HouseholdLayer({ households, selectedId, onSelect, marking }) {
   const { screenToFlowPosition } = useReactFlow();
   const { editPoints } = useContext(Ctx);
@@ -550,80 +550,90 @@ function HouseholdLayer({ households, selectedId, onSelect, marking }) {
   }
 
   return (
-    <svg className="drawings">
-      {households.map((h) => {
-        const pts = h.points;
-        const d = smoothPath(pts);
-        const c = HOUSEHOLD_COLORS[h.color] ?? HOUSEHOLD_COLORS.azul;
-        const sel = h.id === selectedId;
-        const tl = topLeft(pts);
-        const cen = centroid(pts);
-        return (
-          <g key={h.id}>
-            <path
-              d={d}
-              fill={c.box}
-              stroke={c.border}
-              strokeWidth={sel ? 2.5 : 1.5}
-              strokeDasharray={sel ? undefined : '6 4'}
-              style={{ pointerEvents: 'none' }}
-            />
-            <path
-              d={d}
-              fill="none"
-              stroke="transparent"
-              strokeWidth={24}
-              style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
-              onClick={() => {
-                if (!marking) onSelect(h.id);
-              }}
-            />
-            <text
-              x={tl.minX + 12}
-              y={tl.minY + 20}
-              fontSize={12}
-              fontWeight={600}
-              fill="#374151"
-              style={{ pointerEvents: 'none' }}
-            >
-              {h.label}
-            </text>
+    <>
+      <svg className="hh-back">
+        {households.map((h) => {
+          const d = smoothPath(h.points);
+          const c = HOUSEHOLD_COLORS[h.color] ?? HOUSEHOLD_COLORS.azul;
+          const sel = h.id === selectedId;
+          const tl = topLeft(h.points);
+          return (
+            <g key={h.id}>
+              <path
+                d={d}
+                fill={c.box}
+                stroke={c.border}
+                strokeWidth={sel ? 2.5 : 1.5}
+                strokeDasharray={sel ? undefined : '6 4'}
+              />
+              <text
+                x={tl.minX + 12}
+                y={tl.minY + 20}
+                fontSize={12}
+                fontWeight={600}
+                fill="#374151"
+              >
+                {h.label}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
 
-            {sel && !marking && (
-              <>
-                {pts.map((p, i) => {
-                  const q = pts[(i + 1) % pts.length];
-                  return (
+      <svg className="hh-front">
+        {households.map((h) => {
+          const d = smoothPath(h.points);
+          const sel = h.id === selectedId;
+          const cen = centroid(h.points);
+          return (
+            <g key={h.id}>
+              <path
+                d={d}
+                fill="none"
+                stroke="transparent"
+                strokeWidth={24}
+                style={{ pointerEvents: marking ? 'none' : 'stroke', cursor: 'pointer' }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!marking) onSelect(h.id);
+                }}
+              />
+              {sel && !marking && (
+                <>
+                  {h.points.map((p, i) => {
+                    const q = h.points[(i + 1) % h.points.length];
+                    return (
+                      <Grip
+                        key={`m${i}`}
+                        kind="mid"
+                        x={(p.x + q.x) / 2}
+                        y={(p.y + q.y) / 2}
+                        onDown={(e) => beginDrag(e, h.id, { type: 'mid', idx: i })}
+                      />
+                    );
+                  })}
+                  {h.points.map((p, i) => (
                     <Grip
-                      key={`m${i}`}
-                      kind="mid"
-                      x={(p.x + q.x) / 2}
-                      y={(p.y + q.y) / 2}
-                      onDown={(e) => beginDrag(e, h.id, { type: 'mid', idx: i })}
+                      key={`v${i}`}
+                      kind="square"
+                      x={p.x}
+                      y={p.y}
+                      onDown={(e) => beginDrag(e, h.id, { type: 'vertex', idx: i })}
                     />
-                  );
-                })}
-                {pts.map((p, i) => (
+                  ))}
                   <Grip
-                    key={`v${i}`}
-                    kind="square"
-                    x={p.x}
-                    y={p.y}
-                    onDown={(e) => beginDrag(e, h.id, { type: 'vertex', idx: i })}
+                    kind="move"
+                    x={cen.x}
+                    y={cen.y}
+                    onDown={(e) => beginDrag(e, h.id, { type: 'move' })}
                   />
-                ))}
-                <Grip
-                  kind="move"
-                  x={cen.x}
-                  y={cen.y}
-                  onDown={(e) => beginDrag(e, h.id, { type: 'move' })}
-                />
-              </>
-            )}
-          </g>
-        );
-      })}
-    </svg>
+                </>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </>
   );
 }
 
@@ -1220,7 +1230,6 @@ export default function App() {
     }
   }, [graph]);
 
-  // Sombreado: cada persona que pertenece a un hogar recibe el color de ese hogar
   const shade = useMemo(() => {
     const out = {};
     for (const h of graph.households) {
@@ -1232,7 +1241,6 @@ export default function App() {
     return out;
   }, [graph.households]);
 
-  // Solo las personas son nodos de React Flow; los hogares se dibujan en su propia capa
   const onNodesChange = useCallback(
     (changes) =>
       setGraph((g) => {
@@ -1247,7 +1255,6 @@ export default function App() {
     setGraph((g) => relayoutAll(g, node.id));
   }, []);
 
-  // Cambia los puntos de un hogar (arrastre de esquinas, puntos y forma completa)
   const editPoints = useCallback((id, fn) => {
     setGraph((g) => ({
       ...g,
